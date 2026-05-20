@@ -45,6 +45,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.gyeonggisumgil.app.BuildConfig
+import com.gyeonggisumgil.app.data.RouteRepository
+import com.gyeonggisumgil.app.data.SampleRouteRepository
 import com.gyeonggisumgil.app.domain.model.RouteCandidate
 import com.naver.maps.geometry.LatLngBounds
 import com.naver.maps.geometry.LatLng
@@ -57,6 +59,8 @@ import com.naver.maps.map.overlay.PathOverlay
 @Composable
 fun GyeonggiSumgilApp() {
     var selectedTab by remember { mutableStateOf(AppTab.Home) }
+    val routeRepository = remember { SampleRouteRepository() }
+    val routes = remember { routeRepository.getRecommendedRoutes(DEFAULT_START, DEFAULT_DESTINATION) }
 
     Column(
         modifier = Modifier
@@ -74,8 +78,11 @@ fun GyeonggiSumgilApp() {
                 .fillMaxWidth()
         ) {
             when (selectedTab) {
-                AppTab.Home -> HomeScreen(onRouteClick = { selectedTab = AppTab.Route })
-                AppTab.Route -> RouteScreen()
+                AppTab.Home -> HomeScreen(
+                    routes = routes,
+                    onRouteClick = { selectedTab = AppTab.Route }
+                )
+                AppTab.Route -> RouteScreen(routeRepository = routeRepository)
                 AppTab.Chat -> ChatScreen()
             }
         }
@@ -119,7 +126,10 @@ private fun AppHeader(
 }
 
 @Composable
-private fun HomeScreen(onRouteClick: () -> Unit) {
+private fun HomeScreen(
+    routes: List<RouteCandidate>,
+    onRouteClick: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -128,10 +138,10 @@ private fun HomeScreen(onRouteClick: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         AirQualitySummaryCard()
-        MapPreviewCard()
+        MapPreviewCard(route = routes.first())
 
         SectionTitle("오늘의 추천")
-        RouteCard(route = sampleRoutes.first(), highlighted = true)
+        RouteCard(route = routes.first(), highlighted = true)
 
         Button(
             onClick = onRouteClick,
@@ -144,9 +154,12 @@ private fun HomeScreen(onRouteClick: () -> Unit) {
 }
 
 @Composable
-private fun RouteScreen() {
+private fun RouteScreen(routeRepository: RouteRepository) {
     var start by remember { mutableStateOf("수원시청") }
     var destination by remember { mutableStateOf("광교호수공원") }
+    val routes = remember(start, destination) {
+        routeRepository.getRecommendedRoutes(start, destination)
+    }
 
     Column(
         modifier = Modifier
@@ -173,14 +186,14 @@ private fun RouteScreen() {
                     singleLine = true
                 )
                 Text(
-                    text = "카카오맵 승인 전까지는 더미 경로로 노출 점수 UI를 먼저 검증합니다.",
+                    text = "현재는 샘플 경로를 사용하며, 이후 네이버 Directions 응답으로 교체합니다.",
                     color = AppColors.Muted,
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
         }
 
-        sampleRoutes.forEachIndexed { index, route ->
+        routes.forEachIndexed { index, route ->
             RouteCard(route = route, highlighted = index == 0)
         }
     }
@@ -275,7 +288,7 @@ private fun AirQualitySummaryCard() {
 }
 
 @Composable
-private fun MapPreviewCard() {
+private fun MapPreviewCard(route: RouteCandidate) {
     CardSurface(contentPadding = 0.dp) {
         Box(
             modifier = Modifier
@@ -284,7 +297,10 @@ private fun MapPreviewCard() {
                 .clip(RoundedCornerShape(22.dp))
         ) {
             if (BuildConfig.NAVER_CLIENT_ID.isNotBlank()) {
-                NaverMapPreview(modifier = Modifier.fillMaxSize())
+                NaverMapPreview(
+                    route = route,
+                    modifier = Modifier.fillMaxSize()
+                )
             } else {
                 FallbackMapPreview(modifier = Modifier.fillMaxSize())
             }
@@ -293,7 +309,10 @@ private fun MapPreviewCard() {
 }
 
 @Composable
-private fun NaverMapPreview(modifier: Modifier = Modifier) {
+private fun NaverMapPreview(
+    route: RouteCandidate,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val mapView = remember { MapView(context) }
@@ -332,7 +351,12 @@ private fun NaverMapPreview(modifier: Modifier = Modifier) {
                     isMapReady = true
                     mapStatus = ""
 
-                    val routePoints = sampleRoutePoints
+                    val routePoints = route.coordinates
+                    if (routePoints.isEmpty()) {
+                        mapStatus = "표시할 경로 좌표가 없습니다."
+                        return@getMapAsync
+                    }
+
                     val bounds = routePoints.drop(1).fold(
                         LatLngBounds.Builder().include(routePoints.first())
                     ) { builder, point -> builder.include(point) }.build()
@@ -580,39 +604,6 @@ private object AppColors {
     val Background = Color(0xFFF3FAF6)
 }
 
-private val sampleRoutes = listOf(
-    RouteCandidate(
-        id = "clean",
-        title = "깨끗한 경로",
-        distanceMeters = 1800,
-        durationMinutes = 24,
-        airScore = 86,
-        exposureSummary = "대로변을 줄이고 공원·하천 인접 구간을 우선 통과하는 추천 경로입니다."
-    ),
-    RouteCandidate(
-        id = "balanced",
-        title = "균형 경로",
-        distanceMeters = 1600,
-        durationMinutes = 21,
-        airScore = 78,
-        exposureSummary = "소요시간과 대기질 노출을 함께 고려한 일상 이동용 경로입니다."
-    ),
-    RouteCandidate(
-        id = "fast",
-        title = "빠른 경로",
-        distanceMeters = 1400,
-        durationMinutes = 18,
-        airScore = 62,
-        exposureSummary = "가장 빠르지만 차량 통행량이 많은 구간이 포함될 수 있습니다."
-    )
-)
-
-private val sampleRoutePoints = listOf(
-    LatLng(37.2636, 127.0286),
-    LatLng(37.2665, 127.0301),
-    LatLng(37.2704, 127.0332),
-    LatLng(37.2752, 127.0398),
-    LatLng(37.2794, 127.0471)
-)
-
 private const val TAG = "GyeonggiSumgil"
+private const val DEFAULT_START = "수원시청"
+private const val DEFAULT_DESTINATION = "광교호수공원"

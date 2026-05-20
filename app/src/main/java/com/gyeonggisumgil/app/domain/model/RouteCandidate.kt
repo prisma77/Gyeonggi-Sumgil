@@ -1,4 +1,6 @@
-﻿package com.gyeonggisumgil.app.domain.model
+package com.gyeonggisumgil.app.domain.model
+
+import com.naver.maps.geometry.LatLng
 
 data class RouteCandidate(
     val id: String,
@@ -6,5 +8,6 @@ data class RouteCandidate(
     val distanceMeters: Int,
     val durationMinutes: Int,
     val airScore: Int,
-    val exposureSummary: String
+    val exposureSummary: String,
+    val coordinates: List<LatLng> = emptyList()
 )
