@@ -11,7 +11,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven("https://devrepo.kakao.com/nexus/repository/kakaomap-releases/")
+        maven("https://repository.map.naver.com/archive/maven")
     }
 }
 

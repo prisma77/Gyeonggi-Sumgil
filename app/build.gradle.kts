@@ -23,12 +23,13 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        val kakaoNativeAppKey =
-            (project.findProperty("KAKAO_NATIVE_APP_KEY") as? String)
-                ?: localProperties.getProperty("KAKAO_NATIVE_APP_KEY")
+        val naverClientId =
+            (project.findProperty("NAVER_CLIENT_ID") as? String)
+                ?: localProperties.getProperty("NAVER_CLIENT_ID")
                 ?: ""
 
-        buildConfigField("String", "KAKAO_NATIVE_APP_KEY", "\"$kakaoNativeAppKey\"")
+        buildConfigField("String", "NAVER_CLIENT_ID", "\"$naverClientId\"")
+        manifestPlaceholders["NAVER_CLIENT_ID"] = naverClientId
     }
 
     buildFeatures {
@@ -62,7 +63,7 @@ dependencies {
     implementation("androidx.compose.ui:ui:1.5.4")
     implementation("androidx.compose.ui:ui-tooling-preview:1.5.4")
     implementation("androidx.compose.material3:material3:1.1.2")
-    implementation("com.kakao.maps.open:android:2.13.1")
+    implementation("com.naver.maps:map-sdk:3.21.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.10.1")
 
