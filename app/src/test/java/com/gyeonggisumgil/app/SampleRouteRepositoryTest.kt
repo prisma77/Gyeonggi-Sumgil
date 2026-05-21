@@ -22,4 +22,12 @@ class SampleRouteRepositoryTest {
 
         assertTrue(routes.all { it.coordinates.size >= 2 })
     }
+
+    @Test
+    fun recommendedRoutesContainDisplayMetadata() {
+        val routes = repository.getRecommendedRoutes("수원시청", "광교호수공원")
+
+        assertTrue(routes.all { it.highlightLabel.isNotBlank() })
+        assertTrue(routes.all { it.routeColorArgb != 0L })
+    }
 }

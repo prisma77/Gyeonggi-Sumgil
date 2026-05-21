@@ -13,7 +13,9 @@ class RouteCandidateTest {
             distanceMeters = 1800,
             durationMinutes = 24,
             airScore = 86,
-            exposureSummary = "공원 인접 경로"
+            exposureSummary = "공원 인접 경로",
+            highlightLabel = "대기질 우선",
+            routeColorArgb = 0xFF2E7D5B
         )
 
         assertEquals(86, route.airScore)

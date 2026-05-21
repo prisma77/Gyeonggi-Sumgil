@@ -1,7 +1,5 @@
 package com.gyeonggisumgil.app.domain.model
 
-import com.naver.maps.geometry.LatLng
-
 data class RouteCandidate(
     val id: String,
     val title: String,
@@ -9,5 +7,7 @@ data class RouteCandidate(
     val durationMinutes: Int,
     val airScore: Int,
     val exposureSummary: String,
-    val coordinates: List<LatLng> = emptyList()
+    val highlightLabel: String,
+    val routeColorArgb: Long,
+    val coordinates: List<GeoPoint> = emptyList()
 )

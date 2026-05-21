@@ -1,6 +1,8 @@
 package com.gyeonggisumgil.app.ui
 
-import android.util.Log
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,38 +24,45 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import com.gyeonggisumgil.app.BuildConfig
 import com.gyeonggisumgil.app.data.RouteRepository
 import com.gyeonggisumgil.app.data.SampleRouteRepository
+import com.gyeonggisumgil.app.data.tmap.TmapPedestrianRouteApi
+import com.gyeonggisumgil.app.data.tmap.TmapPedestrianRouteRepository
+import com.gyeonggisumgil.app.domain.model.GeoPoint
 import com.gyeonggisumgil.app.domain.model.RouteCandidate
-import com.naver.maps.geometry.LatLngBounds
-import com.naver.maps.geometry.LatLng
-import com.naver.maps.map.CameraUpdate
-import com.naver.maps.map.MapView
-import com.naver.maps.map.overlay.OverlayImage
-import com.naver.maps.map.overlay.Marker
-import com.naver.maps.map.overlay.PathOverlay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.ln
+import kotlin.math.pow
+import kotlin.math.sin
 
 @Composable
 fun GyeonggiSumgilApp() {
@@ -157,9 +165,22 @@ private fun HomeScreen(
 private fun RouteScreen(routeRepository: RouteRepository) {
     var start by remember { mutableStateOf("수원시청") }
     var destination by remember { mutableStateOf("광교호수공원") }
-    val routes = remember(start, destination) {
+    var selectedRouteId by remember { mutableStateOf<String?>(null) }
+    val sampleRoutes = remember(start, destination) {
         routeRepository.getRecommendedRoutes(start, destination)
     }
+    var routes by remember(start, destination) { mutableStateOf(sampleRoutes) }
+    var routeStatus by remember { mutableStateOf(routeApiStatusMessage()) }
+    var isLoadingTmapRoute by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+    val tmapRouteRepository = remember {
+        if (BuildConfig.TMAP_APP_KEY.isBlank()) {
+            null
+        } else {
+            TmapPedestrianRouteRepository(TmapPedestrianRouteApi(BuildConfig.TMAP_APP_KEY))
+        }
+    }
+    val selectedRoute = routes.firstOrNull { it.id == selectedRouteId } ?: routes.first()
 
     Column(
         modifier = Modifier
@@ -169,6 +190,8 @@ private fun RouteScreen(routeRepository: RouteRepository) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         SectionTitle("경로 추천")
+        MapPreviewCard(route = selectedRoute)
+
         CardSurface {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
@@ -186,15 +209,49 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                     singleLine = true
                 )
                 Text(
-                    text = "현재는 샘플 경로를 사용하며, 이후 네이버 Directions 응답으로 교체합니다.",
+                    text = routeStatus,
                     color = AppColors.Muted,
                     style = MaterialTheme.typography.bodyMedium
                 )
+                Button(
+                    onClick = {
+                        val repository = tmapRouteRepository ?: return@Button
+                        coroutineScope.launch {
+                            isLoadingTmapRoute = true
+                            routeStatus = "Tmap 보행자 경로를 불러오는 중입니다."
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    repository.getRecommendedRoutes(start, destination)
+                                }
+                            }.onSuccess { tmapRoutes ->
+                                if (tmapRoutes.isEmpty()) {
+                                    routeStatus = "등록된 장소 좌표가 없어 샘플 경로를 유지합니다. 현재는 수원시청과 광교호수공원을 지원합니다."
+                                } else {
+                                    routes = tmapRoutes
+                                    selectedRouteId = tmapRoutes.first().id
+                                    routeStatus = "Tmap 보행자 경로를 지도에 반영했습니다."
+                                }
+                            }.onFailure { throwable ->
+                                routeStatus = "Tmap 경로 호출 실패: ${throwable.message ?: "오류 내용을 확인할 수 없습니다."}"
+                            }
+                            isLoadingTmapRoute = false
+                        }
+                    },
+                    enabled = tmapRouteRepository != null && !isLoadingTmapRoute,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppColors.Primary)
+                ) {
+                    Text(if (isLoadingTmapRoute) "불러오는 중" else "Tmap 도보 경로 불러오기")
+                }
             }
         }
 
-        routes.forEachIndexed { index, route ->
-            RouteCard(route = route, highlighted = index == 0)
+        routes.forEach { route ->
+            RouteCard(
+                route = route,
+                highlighted = route.id == selectedRoute.id,
+                onClick = { selectedRouteId = route.id }
+            )
         }
     }
 }
@@ -296,8 +353,8 @@ private fun MapPreviewCard(route: RouteCandidate) {
                 .height(240.dp)
                 .clip(RoundedCornerShape(22.dp))
         ) {
-            if (BuildConfig.NAVER_CLIENT_ID.isNotBlank()) {
-                NaverMapPreview(
+            if (BuildConfig.TMAP_APP_KEY.isNotBlank()) {
+                TmapStaticMapPreview(
                     route = route,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -309,98 +366,112 @@ private fun MapPreviewCard(route: RouteCandidate) {
 }
 
 @Composable
-private fun NaverMapPreview(
+private fun TmapStaticMapPreview(
     route: RouteCandidate,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val mapView = remember { MapView(context) }
-    var hasCreated by remember { mutableStateOf(false) }
-    var mapStatus by remember { mutableStateOf("네이버 지도를 불러오는 중입니다.") }
-    var isMapReady by remember { mutableStateOf(false) }
-
-    DisposableEffect(mapView, lifecycleOwner) {
-        if (!hasCreated) {
-            hasCreated = true
-            mapView.onCreate(null)
-        }
-
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_START -> mapView.onStart()
-                Lifecycle.Event.ON_RESUME -> mapView.onResume()
-                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
-                Lifecycle.Event.ON_STOP -> mapView.onStop()
-                else -> Unit
+    val staticMapClient = remember { OkHttpClient() }
+    val mapCenter = remember(route.coordinates) { route.mapCenter() }
+    val mapImageResult by produceState<Result<androidx.compose.ui.graphics.ImageBitmap>?>(
+        initialValue = null,
+        route.id,
+        route.coordinates
+    ) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                loadTmapStaticMap(
+                    client = staticMapClient,
+                    appKey = BuildConfig.TMAP_APP_KEY,
+                    center = mapCenter
+                ).asImageBitmap()
             }
-        }
-
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            mapView.onDestroy()
         }
     }
 
     Box(modifier = modifier.background(Color(0xFF1B1F24))) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = {
-                mapView.getMapAsync { naverMap ->
-                    isMapReady = true
-                    mapStatus = ""
+        mapImageResult?.onSuccess { image ->
+            Image(
+                bitmap = image,
+                contentDescription = "Tmap 지도 미리보기",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.FillBounds
+            )
+            TmapRouteOverlay(
+                route = route,
+                center = mapCenter,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
 
-                    val routePoints = route.coordinates
-                    if (routePoints.isEmpty()) {
-                        mapStatus = "표시할 경로 좌표가 없습니다."
-                        return@getMapAsync
-                    }
-
-                    val bounds = routePoints.drop(1).fold(
-                        LatLngBounds.Builder().include(routePoints.first())
-                    ) { builder, point -> builder.include(point) }.build()
-                    naverMap.moveCamera(CameraUpdate.fitBounds(bounds, 72))
-                    drawSampleRoute(naverMap, routePoints)
-                    Log.d(TAG, "Naver map ready: $naverMap")
-                }
-                mapView
-            }
-        )
-
-        if (!isMapReady && mapStatus.isNotBlank()) {
+        val errorMessage = mapImageResult?.exceptionOrNull()?.message
+        if (mapImageResult == null || errorMessage != null) {
             MapStatusCard(
-                message = mapStatus,
+                message = errorMessage?.let { "Tmap StaticMap 호출 실패: $it" }
+                    ?: "Tmap 지도를 불러오는 중입니다.",
                 modifier = Modifier.align(Alignment.Center)
             )
         }
     }
 }
 
-private fun drawSampleRoute(
-    naverMap: com.naver.maps.map.NaverMap,
-    routePoints: List<LatLng>
+@Composable
+private fun TmapRouteOverlay(
+    route: RouteCandidate,
+    center: GeoPoint,
+    modifier: Modifier = Modifier
 ) {
-    PathOverlay().apply {
-        coords = routePoints
-        color = 0xFF2E7D5B.toInt()
-        outlineColor = 0xFFFFFFFF.toInt()
-        width = 14
-        map = naverMap
-    }
+    Canvas(modifier = modifier) {
+        val routePoints = route.coordinates
+        if (routePoints.size < 2) return@Canvas
 
-    Marker().apply {
-        position = routePoints.first()
-        captionText = "출발"
-        icon = OverlayImage.fromResource(com.naver.maps.map.R.drawable.navermap_default_marker_icon_green)
-        map = naverMap
-    }
+        val projectedPoints = routePoints.map { point ->
+            point.toStaticMapOffset(
+                center = center,
+                width = size.width,
+                height = size.height
+            )
+        }
 
-    Marker().apply {
-        position = routePoints.last()
-        captionText = "도착"
-        icon = OverlayImage.fromResource(com.naver.maps.map.R.drawable.navermap_default_marker_icon_blue)
-        map = naverMap
+        for (index in 0 until projectedPoints.lastIndex) {
+            drawLine(
+                color = Color.White,
+                start = projectedPoints[index],
+                end = projectedPoints[index + 1],
+                strokeWidth = 16f,
+                cap = StrokeCap.Round
+            )
+        }
+        for (index in 0 until projectedPoints.lastIndex) {
+            drawLine(
+                color = Color(route.routeColorArgb),
+                start = projectedPoints[index],
+                end = projectedPoints[index + 1],
+                strokeWidth = 10f,
+                cap = StrokeCap.Round
+            )
+        }
+
+        drawCircle(
+            color = Color.White,
+            radius = 18f,
+            center = projectedPoints.first()
+        )
+        drawCircle(
+            color = AppColors.Primary,
+            radius = 12f,
+            center = projectedPoints.first()
+        )
+        drawCircle(
+            color = Color.White,
+            radius = 18f,
+            center = projectedPoints.last(),
+            style = Stroke(width = 6f)
+        )
+        drawCircle(
+            color = Color(route.routeColorArgb),
+            radius = 11f,
+            center = projectedPoints.last()
+        )
     }
 }
 
@@ -475,10 +546,12 @@ private fun MapStatusCard(
 @Composable
 private fun RouteCard(
     route: RouteCandidate,
-    highlighted: Boolean
+    highlighted: Boolean,
+    onClick: (() -> Unit)? = null
 ) {
     CardSurface(
-        borderColor = if (highlighted) AppColors.Primary else AppColors.Border
+        borderColor = if (highlighted) AppColors.Primary else AppColors.Border,
+        onClick = onClick
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
@@ -487,9 +560,12 @@ private fun RouteCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(route.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                StatusBadge("${route.airScore}점")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    StatusBadge(route.highlightLabel)
+                    StatusBadge("${route.airScore}점")
+                }
             }
-            Text("${route.distanceMeters / 1000.0} km · 약 ${route.durationMinutes}분", color = AppColors.Muted)
+            Text("${formatDistance(route.distanceMeters)} · 약 ${route.durationMinutes}분", color = AppColors.Muted)
             Text(route.exposureSummary, color = AppColors.Ink)
         }
     }
@@ -576,6 +652,7 @@ private fun CardSurface(
     modifier: Modifier = Modifier,
     borderColor: Color = AppColors.Border,
     contentPadding: androidx.compose.ui.unit.Dp = 18.dp,
+    onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
     Box(
@@ -584,6 +661,7 @@ private fun CardSurface(
             .clip(RoundedCornerShape(24.dp))
             .background(Color.White)
             .border(1.dp, borderColor, RoundedCornerShape(24.dp))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(contentPadding)
     ) {
         content()
@@ -607,3 +685,91 @@ private object AppColors {
 private const val TAG = "GyeonggiSumgil"
 private const val DEFAULT_START = "수원시청"
 private const val DEFAULT_DESTINATION = "광교호수공원"
+private const val STATIC_MAP_IMAGE_SIZE = 512
+private const val STATIC_MAP_ZOOM = 14
+
+private fun formatDistance(distanceMeters: Int): String {
+    return String.format(Locale.KOREA, "%.1f km", distanceMeters / 1000.0)
+}
+
+private fun routeApiStatusMessage(): String {
+    return if (BuildConfig.TMAP_APP_KEY.isBlank()) {
+        "현재는 샘플 경로를 사용합니다. Tmap appKey가 설정되면 보행자 경로 API 연동을 진행합니다."
+    } else {
+        "Tmap appKey가 설정되었습니다. Tmap 지도와 보행자 경로 API로 경로를 표시합니다."
+    }
+}
+
+private fun loadTmapStaticMap(
+    client: OkHttpClient,
+    appKey: String,
+    center: GeoPoint
+): android.graphics.Bitmap {
+    val url = "https://apis.openapi.sk.com/tmap/staticMap".toHttpUrl().newBuilder()
+        .addQueryParameter("version", "1")
+        .addQueryParameter("appKey", appKey)
+        .addQueryParameter("coordType", "WGS84GEO")
+        .addQueryParameter("width", STATIC_MAP_IMAGE_SIZE.toString())
+        .addQueryParameter("height", STATIC_MAP_IMAGE_SIZE.toString())
+        .addQueryParameter("zoom", STATIC_MAP_ZOOM.toString())
+        .addQueryParameter("format", "PNG")
+        .addQueryParameter("longitude", center.longitude.toString())
+        .addQueryParameter("latitude", center.latitude.toString())
+        .build()
+
+    val request = Request.Builder()
+        .url(url)
+        .header("Accept", "image/png")
+        .build()
+
+    client.newCall(request).execute().use { response ->
+        if (!response.isSuccessful) {
+            error("HTTP ${response.code}")
+        }
+
+        val bytes = response.body?.bytes() ?: error("빈 이미지 응답")
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: error("이미지 디코딩 실패")
+    }
+}
+
+private fun RouteCandidate.mapCenter(): GeoPoint {
+    if (coordinates.isEmpty()) {
+        return GeoPoint(latitude = 37.2636, longitude = 127.0286)
+    }
+
+    return GeoPoint(
+        latitude = coordinates.map { it.latitude }.average(),
+        longitude = coordinates.map { it.longitude }.average()
+    )
+}
+
+private fun GeoPoint.toStaticMapOffset(
+    center: GeoPoint,
+    width: Float,
+    height: Float
+): Offset {
+    val centerPixel = center.toMercatorPixel()
+    val pointPixel = toMercatorPixel()
+
+    return Offset(
+        x = width / 2f + ((pointPixel.x - centerPixel.x) * width / STATIC_MAP_IMAGE_SIZE).toFloat(),
+        y = height / 2f + ((pointPixel.y - centerPixel.y) * height / STATIC_MAP_IMAGE_SIZE).toFloat()
+    )
+}
+
+private fun GeoPoint.toMercatorPixel(): MercatorPixel {
+    val worldSize = 256.0 * 2.0.pow(STATIC_MAP_ZOOM)
+    val latitudeRadians = latitude * PI / 180.0
+    val sinLatitude = sin(latitudeRadians)
+
+    return MercatorPixel(
+        x = (longitude + 180.0) / 360.0 * worldSize,
+        y = (0.5 - ln((1.0 + sinLatitude) / (1.0 - sinLatitude)) / (4.0 * PI)) * worldSize
+    )
+}
+
+private data class MercatorPixel(
+    val x: Double,
+    val y: Double
+)
