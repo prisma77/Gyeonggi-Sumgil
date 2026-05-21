@@ -13,7 +13,8 @@ class TmapPedestrianRouteParser {
         title: String,
         highlightLabel: String,
         routeColorArgb: Long,
-        fallbackSummary: String
+        fallbackSummary: String,
+        baseAirScore: Int = 80
     ): RouteCandidate {
         val root = JsonParser.parseString(responseJson).asJsonObject
         val features = root.getAsJsonArray("features")
@@ -42,7 +43,7 @@ class TmapPedestrianRouteParser {
             title = title,
             distanceMeters = totalDistanceMeters,
             durationMinutes = secondsToMinutes(totalTimeSeconds),
-            airScore = 80,
+            airScore = baseAirScore,
             exposureSummary = descriptions.firstOrNull() ?: fallbackSummary,
             highlightLabel = highlightLabel,
             routeColorArgb = routeColorArgb,

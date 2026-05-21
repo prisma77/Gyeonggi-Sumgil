@@ -13,8 +13,8 @@ class TmapPedestrianRouteParserTest {
         val route = parser.parse(
             responseJson = samplePedestrianRouteJson,
             routeId = "tmap-recommended",
-            title = "Tmap 추천 도보 경로",
-            highlightLabel = "도보 추천",
+            title = "큰 길 위주 경로",
+            highlightLabel = "큰 길 위주",
             routeColorArgb = 0xFF2E7D5B,
             fallbackSummary = "Tmap 보행자 경로입니다."
         )
@@ -33,13 +33,13 @@ class TmapPedestrianRouteParserTest {
         val route = parser.parse(
             responseJson = samplePedestrianRouteJson,
             routeId = "tmap-avoid-stairs",
-            title = "계단 회피 경로",
-            highlightLabel = "계단 회피",
+            title = "산책 경로",
+            highlightLabel = "산책 우선",
             routeColorArgb = 0xFF356FB3,
             fallbackSummary = "Tmap 보행자 경로입니다."
         )
 
-        assertEquals("계단 회피", route.highlightLabel)
+        assertEquals("산책 우선", route.highlightLabel)
         assertEquals(0xFF356FB3, route.routeColorArgb)
         assertTrue(route.coordinates.isNotEmpty())
     }

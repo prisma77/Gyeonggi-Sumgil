@@ -7,7 +7,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 class TmapPedestrianRouteApi(
-    private val appKey: String,
+    val appKey: String,
     private val client: OkHttpClient = OkHttpClient()
 ) {
     fun getPedestrianRoute(request: TmapPedestrianRouteRequest): String {

@@ -27,7 +27,13 @@ android {
             (project.findProperty("TMAP_APP_KEY") as? String)
                 ?: localProperties.getProperty("TMAP_APP_KEY")
                 ?: ""
+        val naverClientId =
+            (project.findProperty("NAVER_CLIENT_ID") as? String)
+                ?: localProperties.getProperty("NAVER_CLIENT_ID")
+                ?: ""
         buildConfigField("String", "TMAP_APP_KEY", "\"$tmapAppKey\"")
+        buildConfigField("String", "NAVER_CLIENT_ID", "\"$naverClientId\"")
+        manifestPlaceholders["NAVER_CLIENT_ID"] = naverClientId
     }
 
     buildFeatures {
@@ -64,6 +70,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("com.naver.maps:map-sdk:3.23.2")
 
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling:1.5.4")

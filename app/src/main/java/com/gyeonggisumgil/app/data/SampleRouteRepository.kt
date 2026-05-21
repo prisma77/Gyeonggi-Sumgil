@@ -2,13 +2,32 @@ package com.gyeonggisumgil.app.data
 
 import com.gyeonggisumgil.app.domain.model.RouteCandidate
 import com.gyeonggisumgil.app.domain.model.GeoPoint
+import com.gyeonggisumgil.app.domain.route.AirAwareRouteScorer
 
-class SampleRouteRepository : RouteRepository {
+class SampleRouteRepository(
+    private val routeScorer: AirAwareRouteScorer = AirAwareRouteScorer()
+) : RouteRepository {
     override fun getRecommendedRoutes(
         start: String,
         destination: String
     ): List<RouteCandidate> {
-        return listOf(
+        if (start == "미사역" && destination == "미사강변중앙로 90") {
+            return listOf(
+                RouteCandidate(
+                    id = "hanam-preview",
+                    title = "하남 도보 확인 경로",
+                    distanceMeters = 1038,
+                    durationMinutes = 14,
+                    airScore = 82,
+                    exposureSummary = "미사역에서 미사강변중앙로 90까지 도보 경로 확인용 프리뷰입니다. Tmap 호출 후 실제 보행자 경로선으로 교체됩니다.",
+                    highlightLabel = "도보 확인",
+                    routeColorArgb = 0xFF2E7D5B,
+                    coordinates = hanamPreviewCoordinates
+                )
+            )
+        }
+
+        val sampleRoutes = listOf(
             RouteCandidate(
                 id = "clean",
                 title = "깨끗한 경로",
@@ -43,6 +62,12 @@ class SampleRouteRepository : RouteRepository {
                 coordinates = fastRouteCoordinates
             )
         )
+
+        return routeScorer.rankRoutes(
+            routes = sampleRoutes,
+            stations = SampleGyeonggiAirQualityData.stations,
+            readings = SampleGyeonggiAirQualityData.latestReadings
+        )
     }
 
     private val cleanRouteCoordinates = listOf(
@@ -66,5 +91,12 @@ class SampleRouteRepository : RouteRepository {
         GeoPoint(37.2678, 127.0341),
         GeoPoint(37.2738, 127.0418),
         GeoPoint(37.2794, 127.0471)
+    )
+
+    private val hanamPreviewCoordinates = listOf(
+        GeoPoint(37.56309735, 127.19289048),
+        GeoPoint(37.5603, 127.1931),
+        GeoPoint(37.5578, 127.1935),
+        GeoPoint(37.55570933, 127.19391838)
     )
 }
