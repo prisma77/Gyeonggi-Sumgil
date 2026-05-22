@@ -4,7 +4,13 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Build
+import android.os.CancellationSignal
+import android.os.Looper
+import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -29,9 +35,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -54,8 +62,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.gyeonggisumgil.app.BuildConfig
 import com.gyeonggisumgil.app.data.RouteRepository
-import com.gyeonggisumgil.app.data.SampleGyeonggiAirQualityData
 import com.gyeonggisumgil.app.data.SampleRouteRepository
+import com.gyeonggisumgil.app.data.airkorea.AirKoreaApi
+import com.gyeonggisumgil.app.data.airkorea.AirKoreaCurrentAirQualityRepository
+import com.gyeonggisumgil.app.data.airkorea.CurrentAirQualityResult
 import com.gyeonggisumgil.app.data.tmap.TmapPedestrianRouteApi
 import com.gyeonggisumgil.app.data.tmap.TmapPedestrianRouteRepository
 import com.gyeonggisumgil.app.data.tmap.TmapPlace
@@ -75,41 +85,117 @@ import com.naver.maps.map.overlay.Overlay
 import com.naver.maps.map.overlay.PathOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import kotlin.coroutines.resume
 
 @Composable
 fun GyeonggiSumgilApp() {
     var selectedTab by remember { mutableStateOf(AppTab.Home) }
+    var showExitDialog by remember { mutableStateOf(false) }
     val routeRepository = remember { SampleRouteRepository() }
     val routes = remember { routeRepository.getRecommendedRoutes(DEFAULT_START, DEFAULT_DESTINATION) }
     val context = LocalContext.current
+    val appCoroutineScope = rememberCoroutineScope()
+    val airKoreaRepository = remember {
+        if (BuildConfig.AIRKOREA_SERVICE_KEY.isBlank()) {
+            null
+        } else {
+            val placeResolver = BuildConfig.TMAP_APP_KEY
+                .takeIf { it.isNotBlank() }
+                ?.let { TmapPlaceResolver(it) }
+            AirKoreaCurrentAirQualityRepository(
+                api = AirKoreaApi(BuildConfig.AIRKOREA_SERVICE_KEY),
+                placeResolver = placeResolver
+            )
+        }
+    }
     var currentAirQuality by remember { mutableStateOf(CurrentAirQualityState.empty()) }
 
-    fun refreshCurrentAirQuality() {
-        val currentLocation = context.findBestLastKnownLocation()
-        if (currentLocation == null) {
-            currentAirQuality = CurrentAirQualityState.empty("현재 위치를 확인할 수 없습니다.")
+    fun refreshCurrentAirQuality(forceCurrentLocation: Boolean = false) {
+        val repository = airKoreaRepository
+        if (repository == null) {
+            Log.w(APP_LOG_TAG, "AirKorea repository is null. keyBlank=${BuildConfig.AIRKOREA_SERVICE_KEY.isBlank()}")
+            currentAirQuality = CurrentAirQualityState.empty("AirKorea 인증키가 설정되지 않았습니다.")
             return
         }
 
-        val nearestStation = SampleGyeonggiAirQualityData.stations.nearestStationTo(currentLocation)
-        val nearestReading = nearestStation?.let { station ->
-            SampleGyeonggiAirQualityData.latestReadings.firstOrNull { reading ->
-                reading.stationId == station.id
+        currentAirQuality = CurrentAirQualityState.empty("현재 위치 대기질을 불러오는 중입니다.")
+        appCoroutineScope.launch {
+            val cachedResult = if (!forceCurrentLocation) {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        val cachedLocation = context.findBestLastKnownLocation(maxAgeMillis = null)
+                            ?: return@withContext null
+                        Log.d(APP_LOG_TAG, "cached air location=${cachedLocation.latitude},${cachedLocation.longitude}")
+                        withTimeout(AIR_QUALITY_REQUEST_TIMEOUT_MILLIS) {
+                            repository.getCurrentAirQuality(cachedLocation)
+                        }
+                    }
+                }.onFailure { throwable ->
+                    Log.e(APP_LOG_TAG, "AirKorea cached air failed", throwable)
+                }.getOrNull()
+            } else {
+                null
             }
-        }
 
-        currentAirQuality = if (nearestStation != null && nearestReading != null) {
-            CurrentAirQualityState(
-                station = nearestStation,
-                reading = nearestReading,
-                status = "현재 위치에서 가까운 ${nearestStation.city} ${nearestStation.name} 측정소 기준입니다."
-            )
-        } else {
-            CurrentAirQualityState.empty("가까운 대기질 측정소를 찾지 못했습니다.")
+            if (cachedResult != null) {
+                currentAirQuality = cachedResult.toState()
+            }
+
+            val freshResult = runCatching {
+                withContext(Dispatchers.IO) {
+                    val freshLocation = runCatching {
+                        withTimeout(
+                            if (forceCurrentLocation) FAST_CURRENT_LOCATION_TIMEOUT_MILLIS
+                            else CURRENT_LOCATION_TIMEOUT_MILLIS
+                        ) {
+                            context.findCurrentLocationPoint(preferFastProvider = forceCurrentLocation)
+                        }
+                    }.getOrNull()
+                    val fallbackLocation = if (forceCurrentLocation) {
+                        null
+                    } else {
+                        context.findBestLastKnownLocation(maxAgeMillis = null)?.let {
+                            LocatedGeoPoint(point = it, provider = "cached", accuracyMeters = null, ageMillis = null)
+                        }
+                    }
+                    val currentLocation: LocatedGeoPoint = freshLocation ?: fallbackLocation ?: return@withContext null
+                    Log.d(
+                        APP_LOG_TAG,
+                        "current air location=${currentLocation.point.latitude},${currentLocation.point.longitude}, provider=${currentLocation.provider}, accuracy=${currentLocation.accuracyMeters}, ageMs=${currentLocation.ageMillis}"
+                    )
+                    if (!currentLocation.isReliableForAirQuality()) {
+                        error("현재 위치 정확도가 낮습니다. provider=${currentLocation.provider}, accuracy=${currentLocation.accuracyMeters}, ageMs=${currentLocation.ageMillis}")
+                    }
+                    withTimeout(AIR_QUALITY_REQUEST_TIMEOUT_MILLIS) {
+                        repository.getCurrentAirQuality(currentLocation.point)
+                    }
+                }
+            }.onFailure { throwable ->
+                Log.e(APP_LOG_TAG, "AirKorea current air failed", throwable)
+                if (cachedResult == null) currentAirQuality = when (throwable) {
+                    is TimeoutCancellationException -> CurrentAirQualityState.empty("현재 위치 확인이 지연되고 있습니다. 위치 설정을 켠 뒤 다시 시도하세요.")
+                    else -> CurrentAirQualityState.empty("대기질 정보를 불러오지 못했습니다: ${throwable.message ?: "알 수 없는 오류"}")
+                }
+            }.getOrNull()
+
+            currentAirQuality = if (freshResult != null) {
+                Log.d(
+                    APP_LOG_TAG,
+                    "AirKorea matched station=${freshResult.station.name}, address=${freshResult.address}, count=${freshResult.measurementCount}, pm10=${freshResult.reading.pm10}, pm25=${freshResult.reading.pm25}"
+                )
+                freshResult.toState()
+            } else {
+                Log.w(APP_LOG_TAG, "AirKorea result is null")
+                if (cachedResult != null) cachedResult.toState("최근 위치 기준 AirKorea 실시간 측정정보입니다.")
+                else CurrentAirQualityState.empty("현재 위치와 매칭되는 경기·서울·인천 측정소를 찾지 못했습니다.")
+            }
         }
     }
 
@@ -117,7 +203,7 @@ fun GyeonggiSumgilApp() {
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            refreshCurrentAirQuality()
+            refreshCurrentAirQuality(forceCurrentLocation = true)
         } else {
             currentAirQuality = CurrentAirQualityState.empty("위치 권한이 없어 현재 위치 대기질을 표시할 수 없습니다.")
         }
@@ -125,10 +211,18 @@ fun GyeonggiSumgilApp() {
 
     LaunchedEffect(Unit) {
         if (context.hasFineLocationPermission()) {
-            refreshCurrentAirQuality()
+            refreshCurrentAirQuality(forceCurrentLocation = true)
         } else {
             currentAirQuality = CurrentAirQualityState.empty("위치 권한이 필요합니다.")
             locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    BackHandler {
+        if (selectedTab != AppTab.Home) {
+            selectedTab = AppTab.Home
+        } else {
+            showExitDialog = true
         }
     }
 
@@ -153,7 +247,7 @@ fun GyeonggiSumgilApp() {
                     currentAirQuality = currentAirQuality,
                     onRefreshLocation = {
                         if (context.hasFineLocationPermission()) {
-                            refreshCurrentAirQuality()
+                            refreshCurrentAirQuality(forceCurrentLocation = true)
                         } else {
                             locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                         }
@@ -165,6 +259,44 @@ fun GyeonggiSumgilApp() {
             }
         }
     }
+
+    if (showExitDialog) {
+        ExitConfirmDialog(
+            onDismiss = { showExitDialog = false },
+            onExit = {
+                showExitDialog = false
+                (context as? android.app.Activity)?.finish()
+            }
+        )
+    }
+}
+
+@Composable
+private fun ExitConfirmDialog(
+    onDismiss: () -> Unit,
+    onExit: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("앱을 종료할까요?") },
+        text = { Text("경기 숨길을 종료합니다.") },
+        confirmButton = {
+            Button(
+                onClick = onExit,
+                colors = ButtonDefaults.buttonColors(containerColor = AppColors.Primary)
+            ) {
+                Text("앱 종료")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("취소", color = AppColors.Primary)
+            }
+        },
+        containerColor = Color.White,
+        titleContentColor = AppColors.Ink,
+        textContentColor = AppColors.Muted
+    )
 }
 
 @Composable
@@ -1294,6 +1426,16 @@ private data class CurrentAirQualityState(
     }
 }
 
+private fun CurrentAirQualityResult.toState(
+    status: String = "AirKorea 실시간 측정정보 기준입니다."
+): CurrentAirQualityState {
+    return CurrentAirQualityState(
+        station = station,
+        reading = reading,
+        status = status
+    )
+}
+
 private object AppColors {
     val Primary = Color(0xFF2E7D5B)
     val MapAction = Color(0xFF2F6FED)
@@ -1308,7 +1450,21 @@ private const val DEFAULT_DESTINATION = "광교호수공원"
 private const val MIN_ROUTE_DISTANCE_METERS = 100
 private const val KOREA_PM10_HIGH_REFERENCE = 151.0
 private const val KOREA_PM25_HIGH_REFERENCE = 76.0
+private const val LOCATION_CACHE_MAX_AGE_MILLIS = 10 * 60 * 1000L
+private const val FAST_CURRENT_LOCATION_TIMEOUT_MILLIS = 2_000L
+private const val CURRENT_LOCATION_TIMEOUT_MILLIS = 5_000L
+private const val AIR_QUALITY_REQUEST_TIMEOUT_MILLIS = 4_000L
+private const val MAX_CURRENT_LOCATION_AGE_MILLIS = 2 * 60 * 1000L
+private const val MAX_CURRENT_LOCATION_ACCURACY_METERS = 1_000f
+private const val APP_LOG_TAG = "GyeonggiSumgil"
 private val DEFAULT_MAP_CENTER = LatLng(37.2636, 127.0286)
+
+private data class LocatedGeoPoint(
+    val point: GeoPoint,
+    val provider: String?,
+    val accuracyMeters: Float?,
+    val ageMillis: Long?
+)
 
 private fun formatDistance(distanceMeters: Int): String {
     return String.format(Locale.KOREA, "%.1f km", distanceMeters / 1000.0)
@@ -1409,7 +1565,68 @@ private fun Context.hasFineLocationPermission(): Boolean {
     ) == PackageManager.PERMISSION_GRANTED
 }
 
-private fun Context.findBestLastKnownLocation(): GeoPoint? {
+private suspend fun Context.findCurrentLocationPoint(preferFastProvider: Boolean = false): LocatedGeoPoint? {
+    if (!hasFineLocationPermission()) return null
+
+    val locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
+    val providerCandidates = if (preferFastProvider) {
+        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+    } else {
+        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+    }
+    val providers = providerCandidates.filter { provider ->
+        runCatching { locationManager.isProviderEnabled(provider) }.getOrDefault(false)
+    }
+    if (providers.isEmpty()) return null
+
+    return suspendCancellableCoroutine { continuation ->
+        val provider = providers.first()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val cancellationSignal = CancellationSignal()
+            locationManager.getCurrentLocation(
+                provider,
+                cancellationSignal,
+                mainExecutor
+            ) { location ->
+                if (continuation.isActive) {
+                    continuation.resume(location?.toLocatedGeoPoint())
+                }
+            }
+            continuation.invokeOnCancellation { cancellationSignal.cancel() }
+        } else {
+            val listener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    if (continuation.isActive) {
+                        continuation.resume(location.toLocatedGeoPoint())
+                    }
+                    locationManager.removeUpdates(this)
+                }
+            }
+            locationManager.requestSingleUpdate(provider, listener, Looper.getMainLooper())
+            continuation.invokeOnCancellation { locationManager.removeUpdates(listener) }
+        }
+    }
+}
+
+private fun Location.toLocatedGeoPoint(): LocatedGeoPoint {
+    return LocatedGeoPoint(
+        point = GeoPoint(latitude, longitude),
+        provider = provider,
+        accuracyMeters = if (hasAccuracy()) accuracy else null,
+        ageMillis = (System.currentTimeMillis() - time).coerceAtLeast(0L)
+    )
+}
+
+private fun LocatedGeoPoint.isReliableForAirQuality(): Boolean {
+    val age = ageMillis ?: return false
+    val accuracy = accuracyMeters
+    val isFresh = age <= MAX_CURRENT_LOCATION_AGE_MILLIS
+    val isAccurateEnough = accuracy == null || accuracy <= MAX_CURRENT_LOCATION_ACCURACY_METERS
+    return isFresh && isAccurateEnough
+}
+
+private fun Context.findBestLastKnownLocation(maxAgeMillis: Long? = null): GeoPoint? {
     if (!hasFineLocationPermission()) return null
 
     val locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
@@ -1423,6 +1640,9 @@ private fun Context.findBestLastKnownLocation(): GeoPoint? {
             runCatching {
                 locationManager.getLastKnownLocation(provider)
             }.getOrNull()
+        }
+        .filter { location ->
+            maxAgeMillis == null || System.currentTimeMillis() - location.time <= maxAgeMillis
         }
         .maxByOrNull(Location::getTime)
         ?.let { location -> GeoPoint(location.latitude, location.longitude) }

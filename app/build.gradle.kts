@@ -31,8 +31,13 @@ android {
             (project.findProperty("NAVER_CLIENT_ID") as? String)
                 ?: localProperties.getProperty("NAVER_CLIENT_ID")
                 ?: ""
+        val airKoreaServiceKey =
+            (project.findProperty("AIRKOREA_SERVICE_KEY") as? String)
+                ?: localProperties.getProperty("AIRKOREA_SERVICE_KEY")
+                ?: ""
         buildConfigField("String", "TMAP_APP_KEY", "\"$tmapAppKey\"")
         buildConfigField("String", "NAVER_CLIENT_ID", "\"$naverClientId\"")
+        buildConfigField("String", "AIRKOREA_SERVICE_KEY", "\"$airKoreaServiceKey\"")
         manifestPlaceholders["NAVER_CLIENT_ID"] = naverClientId
     }
 

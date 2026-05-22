@@ -6,10 +6,11 @@ import com.gyeonggisumgil.app.domain.model.GeoPoint
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 class TmapPlaceResolver(
     private val appKey: String,
-    private val client: OkHttpClient = OkHttpClient()
+    private val client: OkHttpClient = defaultTmapPlaceClient()
 ) {
     fun resolve(query: String): TmapPlace? {
         val normalizedQuery = query.trim()
@@ -157,4 +158,12 @@ class TmapPlaceResolver(
     companion object {
         private val ROAD_ADDRESS_PATTERN = Regex(""".*(로|길|대로)\s*\d+.*""")
     }
+}
+
+private fun defaultTmapPlaceClient(): OkHttpClient {
+    return OkHttpClient.Builder()
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
+        .callTimeout(4, TimeUnit.SECONDS)
+        .build()
 }
