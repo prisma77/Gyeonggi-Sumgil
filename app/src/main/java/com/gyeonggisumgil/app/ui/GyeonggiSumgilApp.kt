@@ -90,6 +90,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.coroutines.resume
@@ -159,11 +160,9 @@ fun GyeonggiSumgilApp() {
                         }
                     }.getOrNull()
                     val fallbackLocation = if (forceCurrentLocation) {
-                        null
+                        context.findBestLastKnownLocatedLocation(maxAgeMillis = MAX_CURRENT_LOCATION_AGE_MILLIS)
                     } else {
-                        context.findBestLastKnownLocation(maxAgeMillis = null)?.let {
-                            LocatedGeoPoint(point = it, provider = "cached", accuracyMeters = null, ageMillis = null)
-                        }
+                        context.findBestLastKnownLocatedLocation(maxAgeMillis = null)
                     }
                     val currentLocation: LocatedGeoPoint = freshLocation ?: fallbackLocation ?: return@withContext null
                     Log.d(
@@ -1451,11 +1450,13 @@ private const val MIN_ROUTE_DISTANCE_METERS = 100
 private const val KOREA_PM10_HIGH_REFERENCE = 151.0
 private const val KOREA_PM25_HIGH_REFERENCE = 76.0
 private const val LOCATION_CACHE_MAX_AGE_MILLIS = 10 * 60 * 1000L
-private const val FAST_CURRENT_LOCATION_TIMEOUT_MILLIS = 2_000L
+private const val FAST_CURRENT_LOCATION_TIMEOUT_MILLIS = 4_500L
 private const val CURRENT_LOCATION_TIMEOUT_MILLIS = 5_000L
 private const val AIR_QUALITY_REQUEST_TIMEOUT_MILLIS = 4_000L
 private const val MAX_CURRENT_LOCATION_AGE_MILLIS = 2 * 60 * 1000L
 private const val MAX_CURRENT_LOCATION_ACCURACY_METERS = 1_000f
+private const val GPS_LOCATION_ATTEMPT_TIMEOUT_MILLIS = 2_500L
+private const val NETWORK_LOCATION_ATTEMPT_TIMEOUT_MILLIS = 1_500L
 private const val APP_LOG_TAG = "GyeonggiSumgil"
 private val DEFAULT_MAP_CENTER = LatLng(37.2636, 127.0286)
 
@@ -1579,9 +1580,26 @@ private suspend fun Context.findCurrentLocationPoint(preferFastProvider: Boolean
     }
     if (providers.isEmpty()) return null
 
-    return suspendCancellableCoroutine { continuation ->
-        val provider = providers.first()
+    providers.forEach { provider ->
+        val timeoutMillis = when (provider) {
+            LocationManager.GPS_PROVIDER -> GPS_LOCATION_ATTEMPT_TIMEOUT_MILLIS
+            else -> NETWORK_LOCATION_ATTEMPT_TIMEOUT_MILLIS
+        }
+        val location = withTimeoutOrNull(timeoutMillis) {
+            awaitCurrentLocation(locationManager, provider)
+        }
+        if (location != null) return location
+        Log.w(APP_LOG_TAG, "current location provider timed out. provider=$provider, timeoutMs=$timeoutMillis")
+    }
 
+    return null
+}
+
+private suspend fun Context.awaitCurrentLocation(
+    locationManager: LocationManager,
+    provider: String
+): LocatedGeoPoint? {
+    return suspendCancellableCoroutine { continuation ->
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val cancellationSignal = CancellationSignal()
             locationManager.getCurrentLocation(
@@ -1627,6 +1645,10 @@ private fun LocatedGeoPoint.isReliableForAirQuality(): Boolean {
 }
 
 private fun Context.findBestLastKnownLocation(maxAgeMillis: Long? = null): GeoPoint? {
+    return findBestLastKnownLocatedLocation(maxAgeMillis)?.point
+}
+
+private fun Context.findBestLastKnownLocatedLocation(maxAgeMillis: Long? = null): LocatedGeoPoint? {
     if (!hasFineLocationPermission()) return null
 
     val locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
@@ -1645,7 +1667,7 @@ private fun Context.findBestLastKnownLocation(maxAgeMillis: Long? = null): GeoPo
             maxAgeMillis == null || System.currentTimeMillis() - location.time <= maxAgeMillis
         }
         .maxByOrNull(Location::getTime)
-        ?.let { location -> GeoPoint(location.latitude, location.longitude) }
+        ?.toLocatedGeoPoint()
 }
 
 private fun List<AirQualityStation>.nearestStationTo(point: GeoPoint): AirQualityStation? {
