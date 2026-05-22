@@ -48,8 +48,8 @@ class AirAwareRouteScorer {
             return this
         }
 
-        val pm10Penalty = averagePm10?.let { ((it - 30.0) / 2.0).coerceAtLeast(0.0) } ?: 0.0
-        val pm25Penalty = averagePm25?.let { ((it - 15.0) * 1.5).coerceAtLeast(0.0) } ?: 0.0
+        val pm10Penalty = averagePm10?.let { ((it - 50.0) / 2.0).coerceAtLeast(0.0) } ?: 0.0
+        val pm25Penalty = averagePm25?.let { ((it - 25.0) * 1.2).coerceAtLeast(0.0) } ?: 0.0
 
         return (this - pm10Penalty - pm25Penalty)
             .roundToInt()

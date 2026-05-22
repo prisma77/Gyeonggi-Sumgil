@@ -15,7 +15,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         setContent {
-            GyeonggiSumgilTheme {
+            GyeonggiSumgilTheme(
+                darkTheme = false,
+                dynamicColor = false
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background

@@ -172,11 +172,27 @@ private fun AppHeader(
     selectedTab: AppTab,
     onTabSelected: (AppTab) -> Unit
 ) {
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White)
-            .padding(horizontal = 20.dp, vertical = 18.dp)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        AppTab.values().forEach { tab ->
+            TabButton(
+                label = tab.label,
+                selected = selectedTab == tab,
+                onClick = { onTabSelected(tab) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeHero() {
+    Column(
+        modifier = Modifier.fillMaxWidth()
     ) {
         Text(
             text = "경기 숨길",
@@ -190,16 +206,6 @@ private fun AppHeader(
             style = MaterialTheme.typography.bodyMedium,
             color = AppColors.Muted
         )
-        Spacer(modifier = Modifier.height(14.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AppTab.values().forEach { tab ->
-                TabButton(
-                    label = tab.label,
-                    selected = selectedTab == tab,
-                    onClick = { onTabSelected(tab) }
-                )
-            }
-        }
     }
 }
 
@@ -217,9 +223,10 @@ private fun HomeScreen(
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        HomeHero()
+
         AirQualitySummaryCard(
             state = currentAirQuality,
-            recommendationScore = routes.first().airScore,
             onRefreshLocation = onRefreshLocation
         )
 
@@ -357,13 +364,18 @@ private fun RouteScreen(routeRepository: RouteRepository) {
             }.onSuccess { tmapRoutes ->
                 if (activeRequestId != routeRequestId) return@onSuccess
 
+                val firstRoute = tmapRoutes.firstOrNull()
                 if (tmapRoutes.isEmpty()) {
                     routeStatus = "장소 좌표를 찾지 못했습니다. 장소명 또는 도로명 주소를 더 구체적으로 입력하세요."
+                } else if (firstRoute != null && firstRoute.distanceMeters < MIN_ROUTE_DISTANCE_METERS) {
+                    routeStatus = "출발지와 도착지가 100m보다 가깝습니다. 산책 경로를 보려면 더 먼 지점을 선택하세요."
+                    routes = emptyList()
+                    selectedRouteId = null
                 } else {
                     routes = tmapRoutes
                     selectedRouteId = tmapRoutes.first().id
-                    val firstRoute = tmapRoutes.first()
-                    routeStatus = "Tmap 도보 경로 반영: ${formatDistance(firstRoute.distanceMeters)} · 약 ${firstRoute.durationMinutes}분 · 좌표 ${firstRoute.coordinates.size}개"
+                    val selected = tmapRoutes.first()
+                    routeStatus = "Tmap 도보 경로 반영: ${formatDistance(selected.distanceMeters)} · 약 ${selected.durationMinutes}분 · 좌표 ${selected.coordinates.size}개"
                     scrollToRouteCards()
                 }
             }.onFailure { throwable ->
@@ -388,6 +400,12 @@ private fun RouteScreen(routeRepository: RouteRepository) {
         selectedRouteId = null
         routes = emptyList()
 
+        if (startPoint.approximateDistanceTo(destinationPoint) < MIN_ROUTE_DISTANCE_METERS) {
+            routeStatus = "출발지와 도착지가 100m보다 가깝습니다. 산책 경로를 보려면 더 먼 지점을 선택하세요."
+            isLoadingTmapRoute = false
+            return
+        }
+
         val repository = tmapRouteRepository
         if (repository == null) {
             routeStatus = "Tmap appKey가 없어 지도 선택 경로를 계산할 수 없습니다."
@@ -411,13 +429,18 @@ private fun RouteScreen(routeRepository: RouteRepository) {
             }.onSuccess { tmapRoutes ->
                 if (activeRequestId != routeRequestId) return@onSuccess
 
+                val firstRoute = tmapRoutes.firstOrNull()
                 if (tmapRoutes.isEmpty()) {
                     routeStatus = "선택한 지점 사이의 도보 경로를 찾지 못했습니다."
+                } else if (firstRoute != null && firstRoute.distanceMeters < MIN_ROUTE_DISTANCE_METERS) {
+                    routeStatus = "출발지와 도착지가 100m보다 가깝습니다. 산책 경로를 보려면 더 먼 지점을 선택하세요."
+                    routes = emptyList()
+                    selectedRouteId = null
                 } else {
                     routes = tmapRoutes
                     selectedRouteId = tmapRoutes.first().id
-                    val firstRoute = tmapRoutes.first()
-                    routeStatus = "지도 선택 경로 반영: ${formatDistance(firstRoute.distanceMeters)} · 약 ${firstRoute.durationMinutes}분 · 좌표 ${firstRoute.coordinates.size}개"
+                    val selected = tmapRoutes.first()
+                    routeStatus = "지도 선택 경로 반영: ${formatDistance(selected.distanceMeters)} · 약 ${selected.durationMinutes}분 · 좌표 ${selected.coordinates.size}개"
                     scrollToRouteCards()
                 }
             }.onFailure { throwable ->
@@ -509,9 +532,8 @@ private fun RouteScreen(routeRepository: RouteRepository) {
         modifier = Modifier
             .fillMaxSize()
             .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        SectionTitle("경로 추천")
         MapPreviewCard(
             route = selectedRoute,
             interactive = true,
@@ -531,15 +553,17 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                 .verticalScroll(routeScrollState),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            CardSurface {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            CardSurface(contentPadding = 14.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TabButton(
-                            label = "출발지 입력",
+                        CompactRouteButton(
+                            label = "출발",
                             selected = mapPickTarget == MapPickTarget.Start,
+                            modifier = Modifier.weight(1f),
                             onClick = {
                                 focusManager.clearFocus()
                                 clearRouteState("출발지를 지도에서 선택하세요.")
@@ -552,10 +576,10 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                                 mapPickTarget = MapPickTarget.Start
                             }
                         )
-                        Spacer(modifier = Modifier.size(8.dp))
-                        TabButton(
-                            label = "도착지 입력",
+                        CompactRouteButton(
+                            label = "도착",
                             selected = mapPickTarget == MapPickTarget.Destination,
+                            modifier = Modifier.weight(1f),
                             onClick = {
                                 focusManager.clearFocus()
                                 selectedRouteId = null
@@ -569,25 +593,24 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                                 }.also { routeStatus = it }
                             }
                         )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        if (mapPickTarget != null) {
-                            ActionPillButton(
-                                label = "선택",
-                                background = AppColors.MapAction,
-                                onClick = {
-                                    focusManager.clearFocus()
+                        CompactRouteButton(
+                            label = "선택",
+                            selected = mapPickTarget != null,
+                            selectedColor = AppColors.MapAction,
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                focusManager.clearFocus()
+                                if (mapPickTarget != null) {
                                     selectMapCenter()
+                                } else {
+                                    routeStatus = "출발 또는 도착을 먼저 선택하세요."
                                 }
-                            )
-                            Spacer(modifier = Modifier.size(8.dp))
-                        }
-                        TabButton(
+                            }
+                        )
+                        CompactRouteButton(
                             label = "경유",
                             selected = mapPickTarget == MapPickTarget.Waypoint,
+                            modifier = Modifier.weight(1f),
                             onClick = {
                                 focusManager.clearFocus()
                                 if (pickedStart == null && start.isBlank()) {
@@ -601,10 +624,10 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                                 }
                             }
                         )
-                        Spacer(modifier = Modifier.size(8.dp))
-                        TabButton(
-                            label = "현 위치",
+                        CompactRouteButton(
+                            label = "현위치",
                             selected = false,
+                            modifier = Modifier.weight(1f),
                             onClick = {
                                 focusManager.clearFocus()
                                 if (context.hasFineLocationPermission()) {
@@ -635,8 +658,8 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                             clearRouteState("경유지 또는 반환점을 입력한 뒤 경로 찾기를 누르세요.")
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("경유지/반환점") },
-                        placeholder = { Text("선택 입력") },
+                        label = { Text("경유") },
+                        placeholder = { Text("반환점 또는 들를 곳") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
                     )
@@ -647,7 +670,7 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                             clearRouteForManualInput()
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("목적지") },
+                        label = { Text("도착지") },
                         placeholder = { Text("장소명 또는 도로명 주소") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -700,7 +723,10 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                 RouteCard(
                     route = route,
                     highlighted = route.id == selectedRoute?.id,
-                    onClick = { selectedRouteId = route.id }
+                    onClick = { selectedRouteId = route.id },
+                    modifier = Modifier
+                        .fillMaxWidth(0.94f)
+                        .align(Alignment.CenterHorizontally)
                 )
             }
         }
@@ -750,11 +776,11 @@ private fun ChatScreen() {
 @Composable
 private fun AirQualitySummaryCard(
     state: CurrentAirQualityState,
-    recommendationScore: Int,
     onRefreshLocation: () -> Unit
 ) {
     val station = state.station
     val reading = state.reading
+    val airScore = reading?.airQualityScore()
 
     CardSurface {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -791,7 +817,7 @@ private fun AirQualitySummaryCard(
                 )
                 MetricBlock(
                     label = "추천",
-                    value = recommendationScore.toString(),
+                    value = airScore?.toString() ?: "-",
                     unit = "점",
                     modifier = Modifier.weight(1f)
                 )
@@ -1068,10 +1094,13 @@ private fun MapStatusCard(
 private fun RouteCard(
     route: RouteCandidate,
     highlighted: Boolean,
+    modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null
 ) {
     CardSurface(
+        modifier = modifier,
         borderColor = if (highlighted) AppColors.Primary else AppColors.Border,
+        contentPadding = 16.dp,
         onClick = onClick
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1143,6 +1172,36 @@ private fun StatusBadge(text: String) {
             .padding(horizontal = 14.dp, vertical = 7.dp)
     ) {
         Text(text, color = AppColors.Primary, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun CompactRouteButton(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    selectedColor: Color = AppColors.Primary,
+    onClick: () -> Unit
+) {
+    val background = if (selected) selectedColor else Color.White
+    val foreground = if (selected) Color.White else AppColors.Ink
+    val borderColor = if (selected) selectedColor else AppColors.Border
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(background)
+            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = foreground,
+            fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.bodySmall
+        )
     }
 }
 
@@ -1246,6 +1305,9 @@ private object AppColors {
 
 private const val DEFAULT_START = "수원시청"
 private const val DEFAULT_DESTINATION = "광교호수공원"
+private const val MIN_ROUTE_DISTANCE_METERS = 100
+private const val KOREA_PM10_HIGH_REFERENCE = 151.0
+private const val KOREA_PM25_HIGH_REFERENCE = 76.0
 private val DEFAULT_MAP_CENTER = LatLng(37.2636, 127.0286)
 
 private fun formatDistance(distanceMeters: Int): String {
@@ -1260,6 +1322,20 @@ private fun AirQualityGrade.displayName(): String {
         AirQualityGrade.VERY_BAD -> "매우 나쁨"
         AirQualityGrade.UNKNOWN -> "확인 중"
     }
+}
+
+private fun AirQualityReading.airQualityScore(): Int {
+    val scores = listOfNotNull(
+        pm10?.annualParticleScore(highReference = KOREA_PM10_HIGH_REFERENCE),
+        pm25?.annualParticleScore(highReference = KOREA_PM25_HIGH_REFERENCE)
+    )
+    return if (scores.isEmpty()) 0 else scores.average().toInt().coerceIn(0, 100)
+}
+
+private fun Int.annualParticleScore(highReference: Double): Int {
+    val normalized = (this.toDouble() / highReference).coerceIn(0.0, 1.0)
+    val annualBurden = Math.pow(normalized, 1.45)
+    return Math.round(100.0 - (annualBurden * 100.0)).toInt().coerceIn(0, 100)
 }
 
 private fun RouteCandidate.renderKey(): String {
