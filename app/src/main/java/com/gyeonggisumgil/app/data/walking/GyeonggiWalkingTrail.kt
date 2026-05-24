@@ -101,8 +101,8 @@ class GyeonggiWalkingTrailRepository {
                 name = "광교호수공원 산책로",
                 startAddress = "경기도 수원시 영통구 하동",
                 endAddress = "경기도 수원시 영통구 원천동",
-                center = GeoPoint(37.2794, 127.0471),
-                lengthMeters = 3_200
+                center = GeoPoint(37.2831, 127.0605),
+                lengthMeters = 2_700
             ),
             GyeonggiWalkingTrail(
                 id = "seongnam-tancheon",

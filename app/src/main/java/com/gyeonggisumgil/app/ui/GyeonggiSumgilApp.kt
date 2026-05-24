@@ -66,6 +66,10 @@ import com.gyeonggisumgil.app.data.SampleRouteRepository
 import com.gyeonggisumgil.app.data.airkorea.AirKoreaApi
 import com.gyeonggisumgil.app.data.airkorea.AirKoreaCurrentAirQualityRepository
 import com.gyeonggisumgil.app.data.airkorea.CurrentAirQualityResult
+import com.gyeonggisumgil.app.data.ai.AiCourseShape
+import com.gyeonggisumgil.app.data.ai.AiWalkingCourse
+import com.gyeonggisumgil.app.data.ai.AiWalkingCourseCatalog
+import com.gyeonggisumgil.app.data.ai.AiWalkingCourseSelection
 import com.gyeonggisumgil.app.data.gemini.GeminiApi
 import com.gyeonggisumgil.app.data.tmap.TmapPedestrianRouteApi
 import com.gyeonggisumgil.app.data.tmap.TmapPedestrianRouteRepository
@@ -932,9 +936,14 @@ private fun ChatScreen(
     var selectedAiRouteId by remember { mutableStateOf<String?>(null) }
     var aiRouteStatus by remember { mutableStateOf("현재 위치와 산책 후보를 기준으로 AI 추천 경로를 만들 수 있습니다.") }
     var isLoadingAiRoute by remember { mutableStateOf(false) }
+    var selectedAiCourse by remember { mutableStateOf<AiWalkingCourseSelection?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val focusedTrail = walkingTrailRecommendations.firstOrNull()?.trail
     val selectedAiRoute = aiRoutes.firstOrNull { it.id == selectedAiRouteId } ?: aiRoutes.firstOrNull()
+    val courseCatalog = remember { AiWalkingCourseCatalog() }
+    val aiFocusedTrail = selectedAiCourse
+        ?.let { courseCatalog.matchingTrail(it.course) }
+        ?: focusedTrail
     val geminiApi = remember {
         BuildConfig.GEMINI_API_KEY
             .takeIf { it.isNotBlank() }
@@ -958,20 +967,38 @@ private fun ChatScreen(
         val startPoint = currentAirQuality.station?.let { station ->
             GeoPoint(station.latitude, station.longitude)
         } ?: focusedTrail?.center ?: DEFAULT_MAP_CENTER.toGeoPoint()
-        val loopCenter = focusedTrail?.center ?: startPoint
+        val courseSelection = courseCatalog.selectCourse(
+            query = requestText,
+            currentLocation = startPoint,
+            nearbyRecommendations = walkingTrailRecommendations
+        )
+        selectedAiCourse = courseSelection
         val targetDistanceMeters = requestText.extractRequestedDistanceMeters()
 
         coroutineScope.launch {
             isLoadingAiRoute = true
-            aiRouteStatus = "AI가 주변을 한 바퀴 도는 산책 경로를 구성하는 중입니다."
+            aiRouteStatus = courseSelection?.let { selection ->
+                val basis = if (selection.explicitPlaceRequested) "질문에서 찾은 장소" else "현재 위치 주변 후보"
+                "$basis: ${selection.course.name} 기준으로 산책 경로를 구성하는 중입니다."
+            } ?: "AI가 주변을 한 바퀴 도는 산책 경로를 구성하는 중입니다."
             runCatching {
                 withContext(Dispatchers.IO) {
-                    buildDistanceAwareLoopRoutes(
-                        repository = repository,
-                        startPoint = startPoint,
-                        center = loopCenter,
-                        targetDistanceMeters = targetDistanceMeters
-                    )
+                    if (courseSelection != null) {
+                        buildCourseAwareRoutes(
+                            repository = repository,
+                            courseSelection = courseSelection,
+                            currentLocation = startPoint,
+                            targetDistanceMeters = targetDistanceMeters,
+                            requestText = requestText
+                        )
+                    } else {
+                        buildDistanceAwareLoopRoutes(
+                            repository = repository,
+                            startPoint = startPoint,
+                            center = startPoint,
+                            targetDistanceMeters = targetDistanceMeters
+                        )
+                    }
                 }
             }.onSuccess { routes ->
                 aiRoutes = routes
@@ -979,13 +1006,21 @@ private fun ChatScreen(
                 val selected = routes.firstOrNull()
                 aiRouteStatus = if (selected == null) {
                     "AI 추천 경로를 찾지 못했습니다. 산책 후보가 더 많은 지역에서 다시 시도해 보세요."
+                } else if (selected.coordinates.size < 2) {
+                    val courseText = courseSelection?.course?.name ?: selected.title
+                    "추천 장소: $courseText · 예상 ${formatDistance(selected.distanceMeters)} · 정확한 경로선은 표시하지 않습니다."
                 } else {
                     val targetText = targetDistanceMeters?.let { "목표 ${formatDistance(it)} · " }.orEmpty()
-                    "AI 추천 경로: ${targetText}${formatDistance(selected.distanceMeters)} · 약 ${selected.durationMinutes}분"
+                    val courseText = courseSelection?.course?.name?.let { "$it · " }.orEmpty()
+                    "AI 추천 경로: $courseText${targetText}${formatDistance(selected.distanceMeters)} · 약 ${selected.durationMinutes}분"
                 }
                 if (selected != null) {
-                    val targetText = targetDistanceMeters?.let { "요청 거리 ${formatDistance(it)}에 가깝게 " }.orEmpty()
-                    aiAnswer = "${targetText}한 바퀴 도는 산책 경로를 만들었습니다. 실제 보행로를 따라 계산해 요청 거리와 조금 차이날 수 있으니 지도에서 총거리를 확인하세요."
+                    aiAnswer = buildAiRouteAnswer(
+                        courseSelection = courseSelection,
+                        targetDistanceMeters = targetDistanceMeters,
+                        selected = selected,
+                        currentAirQuality = currentAirQuality
+                    )
                 }
             }.onFailure { throwable ->
                 aiRouteStatus = "AI 추천 경로 호출 실패: ${throwable.message ?: "오류 내용을 확인할 수 없습니다."}"
@@ -1006,13 +1041,13 @@ private fun ChatScreen(
             route = selectedAiRoute,
             interactive = false,
             isLoading = isLoadingAiRoute,
-            focusedTrail = if (selectedAiRoute == null) focusedTrail else null,
+            focusedTrail = if ((selectedAiRoute?.coordinates?.size ?: 0) < 2) aiFocusedTrail else null,
             pickedStart = null,
             pickedWaypoint = null,
             pickedDestination = null,
             pickTarget = null,
-            cameraTarget = focusedTrail?.center,
-            cameraRequestId = focusedTrail?.id?.hashCode() ?: 0,
+            cameraTarget = selectedAiCourse?.course?.center ?: focusedTrail?.center,
+            cameraRequestId = selectedAiCourse?.course?.id?.hashCode() ?: focusedTrail?.id?.hashCode() ?: 0,
             onMapCenterChanged = {}
         )
         Text(
@@ -1051,17 +1086,22 @@ private fun ChatScreen(
                 )
                 Button(
                     onClick = {
-                        val api = geminiApi
-                        if (api == null) {
-                            aiAnswer = "Gemini API 키가 설정되지 않았습니다. local.properties의 GEMINI_API_KEY를 확인하세요."
-                            return@Button
-                        }
                         if (message.isBlank()) {
                             aiAnswer = "질문을 입력해 주세요."
                             return@Button
                         }
 
-                        buildAiWalkingRoute(message)
+                        if (message.isRouteGenerationRequest()) {
+                            buildAiWalkingRoute(message)
+                            return@Button
+                        }
+
+                        val api = geminiApi
+                        if (api == null) {
+                            aiAnswer = "AI API 키가 설정되지 않았습니다. local.properties의 GEMINI_API_KEY를 확인하세요."
+                            return@Button
+                        }
+
                         coroutineScope.launch {
                             isLoading = true
                             aiAnswer = runCatching {
@@ -1317,7 +1357,7 @@ private fun NaverRouteMapPreview(
         )
         if (route != null && route.coordinates.size < 2) {
             MapStatusCard(
-                message = "표시할 경로 좌표가 없습니다.",
+                message = "정확한 산책로 선형 데이터가 없어 경로선 대신 추천 장소만 표시합니다.",
                 modifier = Modifier.align(Alignment.Center)
             )
         }
@@ -1537,11 +1577,6 @@ private fun WalkingTrailRecommendationList(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = AppColors.Ink
-                    )
-                    Text(
-                        text = "현재 대기질 기준으로 가까운 시점·종점 후보를 추천합니다.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AppColors.Muted
                     )
                 }
                 StatusBadge("${recommendations.size}개")
@@ -1818,6 +1853,7 @@ private const val MAX_CURRENT_LOCATION_ACCURACY_METERS = 1_000f
 private const val GPS_LOCATION_ATTEMPT_TIMEOUT_MILLIS = 6_000L
 private const val NETWORK_LOCATION_ATTEMPT_TIMEOUT_MILLIS = 5_000L
 private const val LOOP_ROUTE_DISTANCE_EXPANSION_FACTOR = 1.45
+private const val AI_COURSE_LOCAL_START_MAX_METERS = 1_800.0
 private const val APP_LOG_TAG = "GyeonggiSumgil"
 private val DEFAULT_MAP_CENTER = LatLng(37.2636, 127.0286)
 
@@ -2116,6 +2152,152 @@ private fun buildDistanceAwareLoopRoutes(
     }
 }
 
+private fun buildCourseAwareRoutes(
+    repository: TmapPedestrianRouteRepository,
+    courseSelection: AiWalkingCourseSelection,
+    currentLocation: GeoPoint,
+    targetDistanceMeters: Int?,
+    requestText: String
+): List<RouteCandidate> {
+    val course = courseSelection.course
+    val startPoint = if (
+        courseSelection.explicitPlaceRequested ||
+        currentLocation.approximateDistanceTo(course.center) > AI_COURSE_LOCAL_START_MAX_METERS
+    ) {
+        course.entryPoint
+    } else {
+        currentLocation
+    }
+    val waypointCandidates = buildCourseWaypointCandidates(
+        course = course,
+        startPoint = startPoint,
+        targetDistanceMeters = targetDistanceMeters
+    )
+    val attempts = waypointCandidates.map { waypoints ->
+        repository.getRecommendedRoutes(
+            startPlace = startPoint.toTmapPlace("출발"),
+            waypointPlaces = waypoints.mapIndexed { index, point ->
+                point.toTmapPlace("AI 경유 ${index + 1}")
+            },
+            destinationPlace = startPoint.toTmapPlace("도착")
+        )
+    }.filter { it.isNotEmpty() }
+
+    if (attempts.isEmpty()) return emptyList()
+    val selected = if (targetDistanceMeters == null) {
+        attempts.first()
+    } else {
+        attempts.minBy { routes ->
+            val distance = routes.first().distanceMeters
+            val overshootPenalty = if (distance > targetDistanceMeters * 1.35) {
+                (distance - targetDistanceMeters * 1.35).toInt() * 2
+            } else {
+                0
+            }
+            kotlin.math.abs(distance - targetDistanceMeters) + overshootPenalty
+        }
+    }
+
+    if (selected.first().coordinates.size >= 2) {
+        return selected
+    }
+
+    return buildCatalogCourseRoutes(
+        course = course,
+        targetDistanceMeters = targetDistanceMeters,
+        preferFullLoop = requestText.prefersFullLoopCourse()
+    )
+}
+
+private fun buildCourseWaypointCandidates(
+    course: AiWalkingCourse,
+    startPoint: GeoPoint,
+    targetDistanceMeters: Int?
+): List<List<GeoPoint>> {
+    val full = course.waypoints
+    if (full.isEmpty()) {
+        return listOf(buildLoopWaypoints(course.center, startPoint, targetDistanceMeters))
+    }
+
+    return when (course.shape) {
+        AiCourseShape.LakeLoop,
+        AiCourseShape.ParkLoop -> {
+            if (targetDistanceMeters != null && targetDistanceMeters <= 3_500) {
+                val firstTurn = full.take(1)
+                val mediumTurn = full.take(2)
+                listOf(firstTurn, mediumTurn, full).filter { it.isNotEmpty() }
+            } else {
+                listOf(full).filter { it.isNotEmpty() }
+            }
+        }
+        AiCourseShape.RiverOutAndBack -> {
+            val first = full.take(1)
+            val medium = full.take(2)
+            val all = full
+
+            if (targetDistanceMeters != null && targetDistanceMeters <= 3_500) {
+                listOf(first, medium, all).filter { it.isNotEmpty() }
+            } else {
+                listOf(all, medium, first).filter { it.isNotEmpty() }
+            }
+        }
+    }
+}
+
+private fun buildCatalogCourseRoutes(
+    course: AiWalkingCourse,
+    targetDistanceMeters: Int?,
+    preferFullLoop: Boolean
+): List<RouteCandidate> {
+    val routeCoordinates = buildCatalogCourseCoordinateCandidates(course)
+        .filter { it.size >= 3 }
+        .let { candidates ->
+            if (preferFullLoop || targetDistanceMeters == null) {
+                candidates.firstOrNull()
+            } else {
+                candidates.minByOrNull { points ->
+                    kotlin.math.abs(points.totalDistanceMeters() - targetDistanceMeters)
+                }
+            }
+        } ?: return emptyList()
+    val distanceMeters = routeCoordinates.totalDistanceMeters()
+
+    return listOf(
+        RouteCandidate(
+            id = "ai-catalog-${course.id}",
+            title = course.name,
+            distanceMeters = distanceMeters,
+            durationMinutes = (distanceMeters / 67.0).toInt().coerceAtLeast(1),
+            airScore = 84,
+            exposureSummary = "${course.name} 주변 산책 지형을 우선 반영한 코스입니다.",
+            highlightLabel = "장소 우선",
+            routeColorArgb = 0xFF2E7D5B,
+            coordinates = emptyList()
+        )
+    )
+}
+
+private fun buildCatalogCourseCoordinateCandidates(course: AiWalkingCourse): List<List<GeoPoint>> {
+    val fullLoop = listOf(course.entryPoint) + course.waypoints + course.entryPoint
+    if (course.waypoints.isEmpty()) return emptyList()
+
+    return when (course.shape) {
+        AiCourseShape.LakeLoop,
+        AiCourseShape.ParkLoop -> listOf(fullLoop)
+        AiCourseShape.RiverOutAndBack -> {
+            val firstTurn = listOf(course.entryPoint, course.waypoints.first(), course.entryPoint)
+            val mediumTurn = listOf(course.entryPoint) + course.waypoints.take(2) + course.entryPoint
+            val fullTurn = fullLoop
+            listOf(fullTurn, mediumTurn, firstTurn)
+        }
+    }
+}
+
+private fun List<GeoPoint>.totalDistanceMeters(): Int {
+    return zipWithNext()
+        .sumOf { (from, to) -> from.approximateDistanceTo(to).toInt() }
+}
+
 private fun String.extractRequestedDistanceMeters(): Int? {
     val kmMatch = Regex("""(\d+(?:\.\d+)?)\s*(?:km|킬로|키로|킬로미터)""", RegexOption.IGNORE_CASE)
         .find(this)
@@ -2126,6 +2308,61 @@ private fun String.extractRequestedDistanceMeters(): Int? {
     val meterMatch = Regex("""(\d+(?:\.\d+)?)\s*(?:m|미터)""", RegexOption.IGNORE_CASE)
         .find(this)
     return meterMatch?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.toInt()
+}
+
+private fun String.isRouteGenerationRequest(): Boolean {
+    val normalized = lowercase().replace(" ", "")
+    val keywords = listOf(
+        "코스",
+        "경로",
+        "산책길",
+        "산책",
+        "한바퀴",
+        "돌",
+        "걷",
+        "걸",
+        "km",
+        "킬로",
+        "키로",
+        "미터"
+    )
+    return keywords.any { normalized.contains(it) }
+}
+
+private fun String.prefersFullLoopCourse(): Boolean {
+    val normalized = lowercase().replace(" ", "")
+    return listOf("한바퀴", "일주", "둘레", "돈", "돌아", "도는").any { normalized.contains(it) }
+}
+
+private fun buildAiRouteAnswer(
+    courseSelection: AiWalkingCourseSelection?,
+    targetDistanceMeters: Int?,
+    selected: RouteCandidate,
+    currentAirQuality: CurrentAirQualityState
+): String {
+    val place = courseSelection?.course?.name ?: "현재 위치 주변"
+    val targetText = targetDistanceMeters?.let { "요청 ${formatDistance(it)}, " }.orEmpty()
+    val airText = currentAirQuality.reading?.let { reading ->
+        val pm10 = reading.pm10?.toString() ?: "--"
+        val pm25 = reading.pm25?.toString() ?: "--"
+        " 현재 PM10 $pm10, PM2.5 $pm25 기준입니다."
+    }.orEmpty()
+    val gapNotice = buildDistanceGapNotice(targetDistanceMeters, selected.distanceMeters)
+    if (selected.coordinates.size < 2) {
+        return "$place 기준으로 ${targetText}약 ${formatDistance(selected.distanceMeters)} 산책 후보를 찾았습니다. 정확한 보행 선형 데이터가 없어 지도에는 장소만 표시합니다.$airText"
+    }
+
+    return "$place 기준으로 ${targetText}실제 보행 경로 ${formatDistance(selected.distanceMeters)}를 만들었습니다.$gapNotice$airText"
+}
+
+private fun buildDistanceGapNotice(targetDistanceMeters: Int?, actualDistanceMeters: Int): String {
+    val target = targetDistanceMeters ?: return " 지도에서 선형을 확인해 주세요."
+    val gap = kotlin.math.abs(actualDistanceMeters - target)
+    return if (gap > target * 0.35) {
+        " 요청 거리와 차이가 커서 주변 보행로 데이터가 부족할 수 있습니다."
+    } else {
+        " 요청 거리와 가장 가까운 후보입니다."
+    }
 }
 
 private fun GeoPoint.offsetByMeters(

@@ -93,7 +93,7 @@ class AirKoreaCurrentAirQualityRepository(
 
     private fun String.matchScore(address: String): Int {
         val normalizedStation = normalizedKoreanLocation()
-        if (normalizedStation.isBlank()) return 0
+        if (normalizedStation.length < 2) return 0
 
         var score = 0
         if (address.contains(normalizedStation)) score += 100
