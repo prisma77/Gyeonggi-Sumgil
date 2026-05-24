@@ -39,7 +39,7 @@ class TmapPedestrianRouteRepository(
         startPlace: TmapPlace,
         destinationPlace: TmapPlace
     ): List<RouteCandidate> {
-        return getRecommendedRoutes(startPlace, null, destinationPlace)
+        return getRecommendedRoutes(startPlace, emptyList(), destinationPlace)
     }
 
     fun getRecommendedRoutes(
@@ -47,10 +47,18 @@ class TmapPedestrianRouteRepository(
         waypointPlace: TmapPlace?,
         destinationPlace: TmapPlace
     ): List<RouteCandidate> {
+        return getRecommendedRoutes(startPlace, listOfNotNull(waypointPlace), destinationPlace)
+    }
+
+    fun getRecommendedRoutes(
+        startPlace: TmapPlace,
+        waypointPlaces: List<TmapPlace>,
+        destinationPlace: TmapPlace
+    ): List<RouteCandidate> {
         val routes = listOf(
             getRoute(
                 startPlace = startPlace,
-                waypointPlace = waypointPlace,
+                waypointPlaces = waypointPlaces,
                 destinationPlace = destinationPlace,
                 searchOption = SearchOption.AvoidStairs,
                 id = "tmap-avoid-stairs",
@@ -61,7 +69,7 @@ class TmapPedestrianRouteRepository(
             ),
             getRoute(
                 startPlace = startPlace,
-                waypointPlace = waypointPlace,
+                waypointPlaces = waypointPlaces,
                 destinationPlace = destinationPlace,
                 searchOption = SearchOption.Recommended,
                 id = "tmap-recommended",
@@ -81,7 +89,7 @@ class TmapPedestrianRouteRepository(
 
     private fun getRoute(
         startPlace: TmapPlace,
-        waypointPlace: TmapPlace?,
+        waypointPlaces: List<TmapPlace>,
         destinationPlace: TmapPlace,
         searchOption: SearchOption,
         id: String,
@@ -90,7 +98,7 @@ class TmapPedestrianRouteRepository(
         routeColorArgb: Long,
         baseAirScore: Int
     ): RouteCandidate {
-        if (waypointPlace == null) {
+        if (waypointPlaces.isEmpty()) {
             return parseRoute(
                 request = TmapPedestrianRouteRequest(
                     start = startPlace,
@@ -105,37 +113,32 @@ class TmapPedestrianRouteRepository(
             )
         }
 
-        val firstLeg = parseRoute(
-            request = TmapPedestrianRouteRequest(
-                start = startPlace,
-                destination = waypointPlace,
-                searchOption = searchOption
-            ),
-            id = "$id-first-leg",
-            title = title,
-            highlightLabel = highlightLabel,
-            routeColorArgb = routeColorArgb,
-            baseAirScore = baseAirScore
-        )
-        val secondLeg = parseRoute(
-            request = TmapPedestrianRouteRequest(
-                start = waypointPlace,
-                destination = destinationPlace,
-                searchOption = searchOption
-            ),
-            id = "$id-second-leg",
-            title = title,
-            highlightLabel = highlightLabel,
-            routeColorArgb = routeColorArgb,
-            baseAirScore = baseAirScore
-        )
+        val stops = listOf(startPlace) + waypointPlaces + destinationPlace
+        val legs = stops.zipWithNext().mapIndexed { index, (legStart, legDestination) ->
+            parseRoute(
+                request = TmapPedestrianRouteRequest(
+                    start = legStart,
+                    destination = legDestination,
+                    searchOption = searchOption
+                ),
+                id = "$id-leg-$index",
+                title = title,
+                highlightLabel = highlightLabel,
+                routeColorArgb = routeColorArgb,
+                baseAirScore = baseAirScore
+            )
+        }
+        val firstLeg = legs.first()
+        val combinedCoordinates = legs.flatMapIndexed { index, leg ->
+            if (index == 0) leg.coordinates else leg.coordinates.drop(1)
+        }
 
         return firstLeg.copy(
             id = id,
-            distanceMeters = firstLeg.distanceMeters + secondLeg.distanceMeters,
-            durationMinutes = firstLeg.durationMinutes + secondLeg.durationMinutes,
-            exposureSummary = "경유지 ${waypointPlace.name}을 거치는 산책 경로입니다.",
-            coordinates = firstLeg.coordinates + secondLeg.coordinates.drop(1)
+            distanceMeters = legs.sumOf { it.distanceMeters },
+            durationMinutes = legs.sumOf { it.durationMinutes },
+            exposureSummary = "${waypointPlaces.joinToString(" -> ") { it.name }} 경유 산책 경로입니다.",
+            coordinates = combinedCoordinates
         )
     }
 

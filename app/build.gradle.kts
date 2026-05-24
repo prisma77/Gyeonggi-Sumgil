@@ -35,9 +35,14 @@ android {
             (project.findProperty("AIRKOREA_SERVICE_KEY") as? String)
                 ?: localProperties.getProperty("AIRKOREA_SERVICE_KEY")
                 ?: ""
+        val geminiApiKey =
+            (project.findProperty("GEMINI_API_KEY") as? String)
+                ?: localProperties.getProperty("GEMINI_API_KEY")
+                ?: ""
         buildConfigField("String", "TMAP_APP_KEY", "\"$tmapAppKey\"")
         buildConfigField("String", "NAVER_CLIENT_ID", "\"$naverClientId\"")
         buildConfigField("String", "AIRKOREA_SERVICE_KEY", "\"$airKoreaServiceKey\"")
+        buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
         manifestPlaceholders["NAVER_CLIENT_ID"] = naverClientId
     }
 

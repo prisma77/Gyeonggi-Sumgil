@@ -66,10 +66,14 @@ import com.gyeonggisumgil.app.data.SampleRouteRepository
 import com.gyeonggisumgil.app.data.airkorea.AirKoreaApi
 import com.gyeonggisumgil.app.data.airkorea.AirKoreaCurrentAirQualityRepository
 import com.gyeonggisumgil.app.data.airkorea.CurrentAirQualityResult
+import com.gyeonggisumgil.app.data.gemini.GeminiApi
 import com.gyeonggisumgil.app.data.tmap.TmapPedestrianRouteApi
 import com.gyeonggisumgil.app.data.tmap.TmapPedestrianRouteRepository
 import com.gyeonggisumgil.app.data.tmap.TmapPlace
 import com.gyeonggisumgil.app.data.tmap.TmapPlaceResolver
+import com.gyeonggisumgil.app.data.walking.GyeonggiWalkingTrail
+import com.gyeonggisumgil.app.data.walking.GyeonggiWalkingTrailRepository
+import com.gyeonggisumgil.app.data.walking.WalkingTrailRecommendation
 import com.gyeonggisumgil.app.domain.model.AirQualityGrade
 import com.gyeonggisumgil.app.domain.model.AirQualityReading
 import com.gyeonggisumgil.app.domain.model.AirQualityStation
@@ -99,8 +103,9 @@ import kotlin.coroutines.resume
 fun GyeonggiSumgilApp() {
     var selectedTab by remember { mutableStateOf(AppTab.Home) }
     var showExitDialog by remember { mutableStateOf(false) }
+    var walkingTrailMapFocus by remember { mutableStateOf<GyeonggiWalkingTrail?>(null) }
     val routeRepository = remember { SampleRouteRepository() }
-    val routes = remember { routeRepository.getRecommendedRoutes(DEFAULT_START, DEFAULT_DESTINATION) }
+    val walkingTrailRepository = remember { GyeonggiWalkingTrailRepository() }
     val context = LocalContext.current
     val appCoroutineScope = rememberCoroutineScope()
     val airKoreaRepository = remember {
@@ -117,6 +122,14 @@ fun GyeonggiSumgilApp() {
         }
     }
     var currentAirQuality by remember { mutableStateOf(CurrentAirQualityState.empty()) }
+    val walkingTrailRecommendations = remember(currentAirQuality.station, currentAirQuality.reading) {
+        walkingTrailRepository.recommendNearbyTrails(
+            currentLocation = currentAirQuality.station?.let { station ->
+                GeoPoint(station.latitude, station.longitude)
+            },
+            airScore = currentAirQuality.reading?.airQualityScore()
+        )
+    }
 
     fun refreshCurrentAirQuality(forceCurrentLocation: Boolean = false) {
         val repository = airKoreaRepository
@@ -160,7 +173,7 @@ fun GyeonggiSumgilApp() {
                         }
                     }.getOrNull()
                     val fallbackLocation = if (forceCurrentLocation) {
-                        context.findBestLastKnownLocatedLocation(maxAgeMillis = MAX_CURRENT_LOCATION_AGE_MILLIS)
+                        context.findBestLastKnownLocatedLocation(maxAgeMillis = LOCATION_CACHE_MAX_AGE_MILLIS)
                     } else {
                         context.findBestLastKnownLocatedLocation(maxAgeMillis = null)
                     }
@@ -242,8 +255,12 @@ fun GyeonggiSumgilApp() {
         ) {
             when (selectedTab) {
                 AppTab.Home -> HomeScreen(
-                    routes = routes,
                     currentAirQuality = currentAirQuality,
+                    walkingTrailRecommendations = walkingTrailRecommendations,
+                    onWalkingTrailMapClick = { recommendation ->
+                        walkingTrailMapFocus = recommendation.trail
+                        selectedTab = AppTab.Route
+                    },
                     onRefreshLocation = {
                         if (context.hasFineLocationPermission()) {
                             refreshCurrentAirQuality(forceCurrentLocation = true)
@@ -253,8 +270,14 @@ fun GyeonggiSumgilApp() {
                     },
                     onRouteClick = { selectedTab = AppTab.Route }
                 )
-                AppTab.Route -> RouteScreen(routeRepository = routeRepository)
-                AppTab.Chat -> ChatScreen()
+                AppTab.Route -> RouteScreen(
+                    routeRepository = routeRepository,
+                    walkingTrailMapFocus = walkingTrailMapFocus
+                )
+                AppTab.Chat -> ChatScreen(
+                    currentAirQuality = currentAirQuality,
+                    walkingTrailRecommendations = walkingTrailRecommendations
+                )
             }
         }
     }
@@ -342,8 +365,9 @@ private fun HomeHero() {
 
 @Composable
 private fun HomeScreen(
-    routes: List<RouteCandidate>,
     currentAirQuality: CurrentAirQualityState,
+    walkingTrailRecommendations: List<WalkingTrailRecommendation>,
+    onWalkingTrailMapClick: (WalkingTrailRecommendation) -> Unit,
     onRefreshLocation: () -> Unit,
     onRouteClick: () -> Unit
 ) {
@@ -361,21 +385,27 @@ private fun HomeScreen(
             onRefreshLocation = onRefreshLocation
         )
 
-        SectionTitle("오늘의 추천")
-        RouteCard(route = routes.first(), highlighted = true)
+        SectionTitle("경기 산책로 후보")
+        WalkingTrailRecommendationList(
+            recommendations = walkingTrailRecommendations,
+            onMapClick = onWalkingTrailMapClick
+        )
 
         Button(
             onClick = onRouteClick,
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = AppColors.Primary)
         ) {
-            Text("경로 추천 시작")
+            Text("산책 경로 직접 찾기")
         }
     }
 }
 
 @Composable
-private fun RouteScreen(routeRepository: RouteRepository) {
+private fun RouteScreen(
+    routeRepository: RouteRepository,
+    walkingTrailMapFocus: GyeonggiWalkingTrail?
+) {
     var start by remember { mutableStateOf("") }
     var waypoint by remember { mutableStateOf("") }
     var destination by remember { mutableStateOf("") }
@@ -392,6 +422,7 @@ private fun RouteScreen(routeRepository: RouteRepository) {
     var mapCenter by remember { mutableStateOf(DEFAULT_MAP_CENTER.toGeoPoint()) }
     var mapCameraTarget by remember { mutableStateOf<GeoPoint?>(null) }
     var mapCameraRequestId by remember { mutableStateOf(0) }
+    var focusedTrail by remember { mutableStateOf<GyeonggiWalkingTrail?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val routeScrollState = rememberScrollState()
     val context = LocalContext.current
@@ -438,6 +469,23 @@ private fun RouteScreen(routeRepository: RouteRepository) {
     }
     val selectedRoute = routes.firstOrNull { it.id == selectedRouteId } ?: routes.firstOrNull()
 
+    LaunchedEffect(walkingTrailMapFocus?.id) {
+        val trail = walkingTrailMapFocus ?: return@LaunchedEffect
+        focusedTrail = trail
+        start = ""
+        waypoint = ""
+        destination = ""
+        pickedStart = null
+        pickedWaypoint = null
+        pickedDestination = null
+        mapPickTarget = null
+        selectedRouteId = null
+        routes = emptyList()
+        isLoadingTmapRoute = false
+        routeStatus = "${trail.name} 중심 위치로 지도를 이동했습니다. 지도에서 출발·도착을 선택하세요."
+        moveMapCamera(trail.center)
+    }
+
     fun clearRouteState(message: String) {
         routeJob?.cancel()
         routeRequestId += 1
@@ -458,6 +506,7 @@ private fun RouteScreen(routeRepository: RouteRepository) {
         val trimmedStart = requestedStart.trim()
         val trimmedWaypoint = requestedWaypoint?.trim().orEmpty()
         val trimmedDestination = requestedDestination.trim()
+        val hasWaypoint = trimmedWaypoint.isNotBlank()
         routeJob?.cancel()
         routeRequestId += 1
         val activeRequestId = routeRequestId
@@ -465,6 +514,8 @@ private fun RouteScreen(routeRepository: RouteRepository) {
         start = trimmedStart
         waypoint = trimmedWaypoint
         destination = trimmedDestination
+        focusedTrail = null
+        mapPickTarget = null
         selectedRouteId = null
         routes = emptyList()
 
@@ -488,7 +539,7 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                 withContext(Dispatchers.IO) {
                     repository.getRecommendedRoutes(
                         start = trimmedStart,
-                        waypoint = trimmedWaypoint.takeIf { it.isNotBlank() },
+                        waypoint = trimmedWaypoint.takeIf { hasWaypoint },
                         destination = trimmedDestination
                     )
                 }
@@ -498,7 +549,7 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                 val firstRoute = tmapRoutes.firstOrNull()
                 if (tmapRoutes.isEmpty()) {
                     routeStatus = "장소 좌표를 찾지 못했습니다. 장소명 또는 도로명 주소를 더 구체적으로 입력하세요."
-                } else if (firstRoute != null && firstRoute.distanceMeters < MIN_ROUTE_DISTANCE_METERS) {
+                } else if (!hasWaypoint && firstRoute != null && firstRoute.distanceMeters < MIN_ROUTE_DISTANCE_METERS) {
                     routeStatus = "출발지와 도착지가 100m보다 가깝습니다. 산책 경로를 보려면 더 먼 지점을 선택하세요."
                     routes = emptyList()
                     selectedRouteId = null
@@ -528,10 +579,13 @@ private fun RouteScreen(routeRepository: RouteRepository) {
         routeJob?.cancel()
         routeRequestId += 1
         val activeRequestId = routeRequestId
+        focusedTrail = null
+        mapPickTarget = null
         selectedRouteId = null
         routes = emptyList()
+        val hasWaypoint = waypointPoint != null
 
-        if (startPoint.approximateDistanceTo(destinationPoint) < MIN_ROUTE_DISTANCE_METERS) {
+        if (!hasWaypoint && startPoint.approximateDistanceTo(destinationPoint) < MIN_ROUTE_DISTANCE_METERS) {
             routeStatus = "출발지와 도착지가 100m보다 가깝습니다. 산책 경로를 보려면 더 먼 지점을 선택하세요."
             isLoadingTmapRoute = false
             return
@@ -563,7 +617,7 @@ private fun RouteScreen(routeRepository: RouteRepository) {
                 val firstRoute = tmapRoutes.firstOrNull()
                 if (tmapRoutes.isEmpty()) {
                     routeStatus = "선택한 지점 사이의 도보 경로를 찾지 못했습니다."
-                } else if (firstRoute != null && firstRoute.distanceMeters < MIN_ROUTE_DISTANCE_METERS) {
+                } else if (!hasWaypoint && firstRoute != null && firstRoute.distanceMeters < MIN_ROUTE_DISTANCE_METERS) {
                     routeStatus = "출발지와 도착지가 100m보다 가깝습니다. 산책 경로를 보려면 더 먼 지점을 선택하세요."
                     routes = emptyList()
                     selectedRouteId = null
@@ -586,6 +640,7 @@ private fun RouteScreen(routeRepository: RouteRepository) {
     }
 
     fun clearRouteForManualInput() {
+        focusedTrail = null
         pickedStart = null
         pickedWaypoint = null
         pickedDestination = null
@@ -669,6 +724,7 @@ private fun RouteScreen(routeRepository: RouteRepository) {
             route = selectedRoute,
             interactive = true,
             isLoading = isLoadingTmapRoute,
+            focusedTrail = focusedTrail,
             pickedStart = pickedStart,
             pickedWaypoint = pickedWaypoint,
             pickedDestination = pickedDestination,
@@ -865,8 +921,78 @@ private fun RouteScreen(routeRepository: RouteRepository) {
 }
 
 @Composable
-private fun ChatScreen() {
+private fun ChatScreen(
+    currentAirQuality: CurrentAirQualityState,
+    walkingTrailRecommendations: List<WalkingTrailRecommendation>
+) {
     var message by remember { mutableStateOf("오늘 저녁에 산책해도 괜찮아?") }
+    var aiAnswer by remember { mutableStateOf("현재 대기질과 산책 후보를 기준으로 질문해 주세요.") }
+    var isLoading by remember { mutableStateOf(false) }
+    var aiRoutes by remember { mutableStateOf<List<RouteCandidate>>(emptyList()) }
+    var selectedAiRouteId by remember { mutableStateOf<String?>(null) }
+    var aiRouteStatus by remember { mutableStateOf("현재 위치와 산책 후보를 기준으로 AI 추천 경로를 만들 수 있습니다.") }
+    var isLoadingAiRoute by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+    val focusedTrail = walkingTrailRecommendations.firstOrNull()?.trail
+    val selectedAiRoute = aiRoutes.firstOrNull { it.id == selectedAiRouteId } ?: aiRoutes.firstOrNull()
+    val geminiApi = remember {
+        BuildConfig.GEMINI_API_KEY
+            .takeIf { it.isNotBlank() }
+            ?.let { GeminiApi(apiKey = it) }
+    }
+    val tmapRouteRepository = remember {
+        if (BuildConfig.TMAP_APP_KEY.isBlank()) {
+            null
+        } else {
+            TmapPedestrianRouteRepository(TmapPedestrianRouteApi(BuildConfig.TMAP_APP_KEY))
+        }
+    }
+
+    fun buildAiWalkingRoute(requestText: String = message) {
+        val repository = tmapRouteRepository
+        if (repository == null) {
+            aiRouteStatus = "Tmap appKey가 없어 AI 추천 경로를 만들 수 없습니다."
+            return
+        }
+
+        val startPoint = currentAirQuality.station?.let { station ->
+            GeoPoint(station.latitude, station.longitude)
+        } ?: focusedTrail?.center ?: DEFAULT_MAP_CENTER.toGeoPoint()
+        val loopCenter = focusedTrail?.center ?: startPoint
+        val targetDistanceMeters = requestText.extractRequestedDistanceMeters()
+
+        coroutineScope.launch {
+            isLoadingAiRoute = true
+            aiRouteStatus = "AI가 주변을 한 바퀴 도는 산책 경로를 구성하는 중입니다."
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    buildDistanceAwareLoopRoutes(
+                        repository = repository,
+                        startPoint = startPoint,
+                        center = loopCenter,
+                        targetDistanceMeters = targetDistanceMeters
+                    )
+                }
+            }.onSuccess { routes ->
+                aiRoutes = routes
+                selectedAiRouteId = routes.firstOrNull()?.id
+                val selected = routes.firstOrNull()
+                aiRouteStatus = if (selected == null) {
+                    "AI 추천 경로를 찾지 못했습니다. 산책 후보가 더 많은 지역에서 다시 시도해 보세요."
+                } else {
+                    val targetText = targetDistanceMeters?.let { "목표 ${formatDistance(it)} · " }.orEmpty()
+                    "AI 추천 경로: ${targetText}${formatDistance(selected.distanceMeters)} · 약 ${selected.durationMinutes}분"
+                }
+                if (selected != null) {
+                    val targetText = targetDistanceMeters?.let { "요청 거리 ${formatDistance(it)}에 가깝게 " }.orEmpty()
+                    aiAnswer = "${targetText}한 바퀴 도는 산책 경로를 만들었습니다. 실제 보행로를 따라 계산해 요청 거리와 조금 차이날 수 있으니 지도에서 총거리를 확인하세요."
+                }
+            }.onFailure { throwable ->
+                aiRouteStatus = "AI 추천 경로 호출 실패: ${throwable.message ?: "오류 내용을 확인할 수 없습니다."}"
+            }
+            isLoadingAiRoute = false
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -876,13 +1002,43 @@ private fun ChatScreen() {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         SectionTitle("AI 대기질 상담")
-        ChatBubble(
-            title = "사용자",
-            body = "수원시청에서 광교호수공원까지 걸어가도 괜찮을까?"
+        MapPreviewCard(
+            route = selectedAiRoute,
+            interactive = false,
+            isLoading = isLoadingAiRoute,
+            focusedTrail = if (selectedAiRoute == null) focusedTrail else null,
+            pickedStart = null,
+            pickedWaypoint = null,
+            pickedDestination = null,
+            pickTarget = null,
+            cameraTarget = focusedTrail?.center,
+            cameraRequestId = focusedTrail?.id?.hashCode() ?: 0,
+            onMapCenterChanged = {}
         )
+        Text(
+            text = aiRouteStatus,
+            color = AppColors.Muted,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Button(
+            onClick = { buildAiWalkingRoute() },
+            enabled = !isLoadingAiRoute,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = AppColors.Primary)
+        ) {
+            Text(if (isLoadingAiRoute) "경로 구성 중" else "AI 산책길 만들기")
+        }
+        aiRoutes.forEach { route ->
+            RouteCard(
+                route = route,
+                highlighted = route.id == selectedAiRoute?.id,
+                onClick = { selectedAiRouteId = route.id },
+                modifier = Modifier.fillMaxWidth(0.96f)
+            )
+        }
         ChatBubble(
             title = "경기 숨길 AI",
-            body = "현재 대기질 데이터 기준 PM2.5는 보통 수준입니다. 민감군이 아니라면 짧은 산책은 가능하지만, 차량 통행량이 많은 대로변보다 하천·공원 인접 경로를 추천합니다."
+            body = if (isLoading) "현재 대기질과 산책 후보를 분석하는 중입니다." else aiAnswer
         )
         CardSurface {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -890,18 +1046,112 @@ private fun ChatScreen() {
                     value = message,
                     onValueChange = { message = it },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("질문 입력") }
+                    label = { Text("질문 입력") },
+                    placeholder = { Text("예: 30분 정도 산책해도 괜찮아?") }
                 )
                 Button(
-                    onClick = {},
+                    onClick = {
+                        val api = geminiApi
+                        if (api == null) {
+                            aiAnswer = "Gemini API 키가 설정되지 않았습니다. local.properties의 GEMINI_API_KEY를 확인하세요."
+                            return@Button
+                        }
+                        if (message.isBlank()) {
+                            aiAnswer = "질문을 입력해 주세요."
+                            return@Button
+                        }
+
+                        buildAiWalkingRoute(message)
+                        coroutineScope.launch {
+                            isLoading = true
+                            aiAnswer = runCatching {
+                                withContext(Dispatchers.IO) {
+                                    api.generateWalkingAdvice(
+                                        buildGeminiWalkingPrompt(
+                                            userQuestion = message,
+                                            currentAirQuality = currentAirQuality,
+                                            walkingTrailRecommendations = walkingTrailRecommendations
+                                        )
+                                    )
+                                }
+                            }.getOrElse { throwable ->
+                                "AI 응답을 불러오지 못했습니다: ${throwable.message ?: "알 수 없는 오류"}"
+                            }.ifBlank {
+                                "AI 응답이 비어 있습니다. 질문을 조금 더 구체적으로 입력해 주세요."
+                            }
+                            isLoading = false
+                        }
+                    },
+                    enabled = !isLoading,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = AppColors.Primary)
                 ) {
-                    Text("AI에게 물어보기")
+                    Text(if (isLoading || isLoadingAiRoute) "분석 중" else "AI 산책길 추천받기")
                 }
             }
         }
     }
+}
+
+private fun buildGeminiWalkingPrompt(
+    userQuestion: String,
+    currentAirQuality: CurrentAirQualityState,
+    walkingTrailRecommendations: List<WalkingTrailRecommendation>
+): String {
+    val requestedDistance = userQuestion.extractRequestedDistanceMeters()
+    val station = currentAirQuality.station
+    val reading = currentAirQuality.reading
+    val airSummary = if (station != null && reading != null) {
+        """
+        현재 위치 대기질:
+        - 위치/측정소: ${station.city} ${station.name}
+        - 측정 시각: ${reading.measuredAt}
+        - PM10: ${reading.pm10 ?: "확인 불가"} ug/m3
+        - PM2.5: ${reading.pm25 ?: "확인 불가"} ug/m3
+        - 앱 산출 산책 점수: ${reading.airQualityScore()}점
+        - 등급: ${reading.grade.displayName()}
+        - 상태 문구: ${currentAirQuality.status}
+        """.trimIndent()
+    } else {
+        """
+        현재 위치 대기질:
+        - 위치/측정소: 확인 불가
+        - 상태 문구: ${currentAirQuality.status}
+        """.trimIndent()
+    }
+
+    val trailSummary = walkingTrailRecommendations.take(3).joinToString("\n") { recommendation ->
+        val distance = recommendation.distanceFromUserMeters?.let(::formatDistance) ?: "현재 위치 확인 후 계산"
+        "- ${recommendation.trail.name} (${recommendation.trail.sigunName}, ${recommendation.typeLabel}, 산책로 ${formatDistance(recommendation.trail.lengthMeters)}, 현재 기준 $distance)"
+    }.ifBlank {
+        "- 산책로 후보 없음"
+    }
+
+    return """
+        사용자의 질문:
+        $userQuestion
+
+        $airSummary
+
+        경기데이터드림 산책로 후보:
+        $trailSummary
+
+        사용자 요청 거리:
+        ${requestedDistance?.let { "${formatDistance(it)} 내외" } ?: "명시되지 않음"}
+
+        답변 지침:
+        - 5문장 이내로 짧게 답한다.
+        - 답변은 600자 이내로 마무리한다.
+        - 산책 가능 여부를 먼저 말한다.
+        - 사용자가 특정 거리를 요청했다면 그 거리를 최우선 조건으로 언급한다.
+        - 요청 거리와 실제 지도 경로 거리가 달라질 수 있으므로, 실제 총거리는 지도 카드에서 확인하라고 안내한다.
+        - 사용자가 3km를 요청했으면 5km 이상의 장거리 산책을 추천하지 않는다.
+        - PM10/PM2.5 중 확인 가능한 수치를 근거로 든다.
+        - 대기질이 좋으면 15분/30분/60분 중 적절한 산책 길이를 제안한다.
+        - 대기질이 보통 이하이면 짧은 코스, 하천·공원, 큰 도로 회피, 마스크/민감군 주의를 안내한다.
+        - 사용자가 거리나 한바퀴 산책을 요청했다면 AI 상담 지도에 경로를 만들었다고 안내한다.
+        - 경로가 실제 지도에 표시되므로 "경로를 만들 수 없다"거나 "지도 탭에서 해야 한다"고 말하지 않는다.
+    """.trimIndent()
 }
 
 @Composable
@@ -973,6 +1223,7 @@ private fun MapPreviewCard(
     route: RouteCandidate?,
     interactive: Boolean,
     isLoading: Boolean,
+    focusedTrail: GyeonggiWalkingTrail?,
     pickedStart: GeoPoint?,
     pickedWaypoint: GeoPoint?,
     pickedDestination: GeoPoint?,
@@ -996,9 +1247,10 @@ private fun MapPreviewCard(
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
-            interactive && BuildConfig.NAVER_CLIENT_ID.isNotBlank() -> {
+            BuildConfig.NAVER_CLIENT_ID.isNotBlank() -> {
                 NaverRouteMapPreview(
                     route = route,
+                    focusedTrail = focusedTrail,
                     pickedStart = pickedStart,
                     pickedWaypoint = pickedWaypoint,
                     pickedDestination = pickedDestination,
@@ -1008,7 +1260,7 @@ private fun MapPreviewCard(
                     onMapCenterChanged = onMapCenterChanged,
                     modifier = Modifier.fillMaxSize()
                 )
-                if (pickTarget != null) {
+                if (interactive && pickTarget != null) {
                     CenterPickMarker(
                         modifier = Modifier.align(Alignment.Center)
                     )
@@ -1027,6 +1279,7 @@ private fun MapPreviewCard(
 @Composable
 private fun NaverRouteMapPreview(
     route: RouteCandidate?,
+    focusedTrail: GyeonggiWalkingTrail?,
     pickedStart: GeoPoint?,
     pickedWaypoint: GeoPoint?,
     pickedDestination: GeoPoint?,
@@ -1054,11 +1307,11 @@ private fun NaverRouteMapPreview(
                     onCreate(null)
                     onStart()
                     onResume()
-                    renderMapState(route, pickedStart, pickedWaypoint, pickedDestination, pickTarget, cameraTarget, cameraRequestId, onMapCenterChanged)
+                    renderMapState(route, focusedTrail, pickedStart, pickedWaypoint, pickedDestination, pickTarget, cameraTarget, cameraRequestId, onMapCenterChanged)
                 }
             },
             update = { view ->
-                view.renderMapState(route, pickedStart, pickedWaypoint, pickedDestination, pickTarget, cameraTarget, cameraRequestId, onMapCenterChanged)
+                view.renderMapState(route, focusedTrail, pickedStart, pickedWaypoint, pickedDestination, pickTarget, cameraTarget, cameraRequestId, onMapCenterChanged)
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -1073,6 +1326,7 @@ private fun NaverRouteMapPreview(
 
 private fun MapView.renderMapState(
     route: RouteCandidate?,
+    focusedTrail: GyeonggiWalkingTrail?,
     pickedStart: GeoPoint?,
     pickedWaypoint: GeoPoint?,
     pickedDestination: GeoPoint?,
@@ -1081,7 +1335,7 @@ private fun MapView.renderMapState(
     cameraRequestId: Int,
     onMapCenterChanged: (GeoPoint) -> Unit
 ) {
-    val routeKey = buildMapRenderKey(route, pickedStart, pickedWaypoint, pickedDestination, pickTarget, cameraTarget, cameraRequestId)
+    val routeKey = buildMapRenderKey(route, focusedTrail, pickedStart, pickedWaypoint, pickedDestination, pickTarget, cameraTarget, cameraRequestId)
     val currentState = tag as? NaverRouteOverlayState
     if (currentState?.routeKey == routeKey) return
 
@@ -1102,7 +1356,7 @@ private fun MapView.renderMapState(
             onMapCenterChanged(GeoPoint(target.latitude, target.longitude))
         }
         latestState.overlays.forEach { overlay -> overlay.map = null }
-        val overlays = naverMap.drawMapState(route, pickedStart, pickedWaypoint, pickedDestination)
+        val overlays = naverMap.drawMapState(route, focusedTrail, pickedStart, pickedWaypoint, pickedDestination)
         if (cameraTarget != null) {
             naverMap.moveCamera(CameraUpdate.scrollTo(cameraTarget.toLatLng()))
         }
@@ -1112,6 +1366,7 @@ private fun MapView.renderMapState(
 
 private fun NaverMap.drawMapState(
     route: RouteCandidate?,
+    focusedTrail: GyeonggiWalkingTrail?,
     pickedStart: GeoPoint?,
     pickedWaypoint: GeoPoint?,
     pickedDestination: GeoPoint?
@@ -1137,6 +1392,16 @@ private fun NaverMap.drawMapState(
 
     val startPosition = pickedStart?.toLatLng() ?: points.firstOrNull()
     val destinationPosition = pickedDestination?.toLatLng() ?: points.lastOrNull()
+    val focusedTrailPosition = focusedTrail?.center?.toLatLng()
+
+    if (focusedTrailPosition != null) {
+        overlays += Marker().apply {
+            position = focusedTrailPosition
+            captionText = focusedTrail.name
+            subCaptionText = focusedTrail.sigunName
+            map = this@drawMapState
+        }
+    }
 
     if (startPosition != null) {
         overlays += Marker().apply {
@@ -1169,6 +1434,8 @@ private fun NaverMap.drawMapState(
         boundsBuilder.include(startPosition)
         boundsBuilder.include(destinationPosition)
         moveCamera(CameraUpdate.fitBounds(boundsBuilder.build(), 64))
+    } else if (focusedTrailPosition != null) {
+        moveCamera(CameraUpdate.scrollTo(focusedTrailPosition))
     } else if (startPosition != null) {
         moveCamera(CameraUpdate.scrollTo(startPosition))
     } else {
@@ -1248,6 +1515,99 @@ private fun RouteCard(
             }
             Text("${formatDistance(route.distanceMeters)} · 약 ${route.durationMinutes}분", color = AppColors.Muted)
             Text(route.exposureSummary, color = AppColors.Ink)
+        }
+    }
+}
+
+@Composable
+private fun WalkingTrailRecommendationList(
+    recommendations: List<WalkingTrailRecommendation>,
+    onMapClick: (WalkingTrailRecommendation) -> Unit
+) {
+    CardSurface(contentPadding = 14.dp) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        text = "경기데이터드림 산책로 현황",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = AppColors.Ink
+                    )
+                    Text(
+                        text = "현재 대기질 기준으로 가까운 시점·종점 후보를 추천합니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.Muted
+                    )
+                }
+                StatusBadge("${recommendations.size}개")
+            }
+
+            recommendations.forEachIndexed { index, recommendation ->
+                WalkingTrailRecommendationRow(
+                    recommendation = recommendation,
+                    onMapClick = { onMapClick(recommendation) }
+                )
+                if (index < recommendations.lastIndex) {
+                    Divider(color = AppColors.Border)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WalkingTrailRecommendationRow(
+    recommendation: WalkingTrailRecommendation,
+    onMapClick: () -> Unit
+) {
+    val trail = recommendation.trail
+
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = trail.name,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = AppColors.Ink
+            )
+            StatusBadge(recommendation.typeLabel)
+        }
+        Text(
+            text = "${trail.sigunName} · ${formatDistance(trail.lengthMeters)} · 약 ${trail.durationMinutes}분",
+            style = MaterialTheme.typography.bodyMedium,
+            color = AppColors.Muted
+        )
+        Text(
+            text = "지도에서 중심 위치를 확인한 뒤 산책 출발점과 도착점을 직접 선택하세요.",
+            style = MaterialTheme.typography.bodySmall,
+            color = AppColors.Ink
+        )
+        Text(
+            text = recommendation.distanceFromUserMeters?.let { distance ->
+                "현재 기준 약 ${formatDistance(distance)} · ${recommendation.reason}"
+            } ?: "현재 위치를 확인하면 가까운 순서로 다시 정렬됩니다. ${recommendation.reason}",
+            style = MaterialTheme.typography.bodySmall,
+            color = AppColors.Muted
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            CompactRouteButton(
+                label = "지도에서 보기",
+                selected = true,
+                selectedColor = AppColors.MapAction,
+                onClick = onMapClick
+            )
         }
     }
 }
@@ -1450,13 +1810,14 @@ private const val MIN_ROUTE_DISTANCE_METERS = 100
 private const val KOREA_PM10_HIGH_REFERENCE = 151.0
 private const val KOREA_PM25_HIGH_REFERENCE = 76.0
 private const val LOCATION_CACHE_MAX_AGE_MILLIS = 10 * 60 * 1000L
-private const val FAST_CURRENT_LOCATION_TIMEOUT_MILLIS = 4_500L
-private const val CURRENT_LOCATION_TIMEOUT_MILLIS = 5_000L
-private const val AIR_QUALITY_REQUEST_TIMEOUT_MILLIS = 4_000L
-private const val MAX_CURRENT_LOCATION_AGE_MILLIS = 2 * 60 * 1000L
+private const val FAST_CURRENT_LOCATION_TIMEOUT_MILLIS = 12_000L
+private const val CURRENT_LOCATION_TIMEOUT_MILLIS = 12_000L
+private const val AIR_QUALITY_REQUEST_TIMEOUT_MILLIS = 7_000L
+private const val MAX_CURRENT_LOCATION_AGE_MILLIS = 10 * 60 * 1000L
 private const val MAX_CURRENT_LOCATION_ACCURACY_METERS = 1_000f
-private const val GPS_LOCATION_ATTEMPT_TIMEOUT_MILLIS = 2_500L
-private const val NETWORK_LOCATION_ATTEMPT_TIMEOUT_MILLIS = 1_500L
+private const val GPS_LOCATION_ATTEMPT_TIMEOUT_MILLIS = 6_000L
+private const val NETWORK_LOCATION_ATTEMPT_TIMEOUT_MILLIS = 5_000L
+private const val LOOP_ROUTE_DISTANCE_EXPANSION_FACTOR = 1.45
 private const val APP_LOG_TAG = "GyeonggiSumgil"
 private val DEFAULT_MAP_CENTER = LatLng(37.2636, 127.0286)
 
@@ -1511,6 +1872,7 @@ private fun RouteCandidate.renderKey(): String {
 
 private fun buildMapRenderKey(
     route: RouteCandidate?,
+    focusedTrail: GyeonggiWalkingTrail?,
     pickedStart: GeoPoint?,
     pickedWaypoint: GeoPoint?,
     pickedDestination: GeoPoint?,
@@ -1520,6 +1882,12 @@ private fun buildMapRenderKey(
 ): String {
     return buildString {
         append(route?.renderKey() ?: "empty")
+        append(':')
+        append(focusedTrail?.id)
+        append(',')
+        append(focusedTrail?.center?.latitude)
+        append(',')
+        append(focusedTrail?.center?.longitude)
         append(':')
         append(pickedStart?.latitude)
         append(',')
@@ -1571,7 +1939,7 @@ private suspend fun Context.findCurrentLocationPoint(preferFastProvider: Boolean
 
     val locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
     val providerCandidates = if (preferFastProvider) {
-        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+        listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER, LocationManager.PASSIVE_PROVIDER)
     } else {
         listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
     }
@@ -1583,6 +1951,7 @@ private suspend fun Context.findCurrentLocationPoint(preferFastProvider: Boolean
     providers.forEach { provider ->
         val timeoutMillis = when (provider) {
             LocationManager.GPS_PROVIDER -> GPS_LOCATION_ATTEMPT_TIMEOUT_MILLIS
+            LocationManager.NETWORK_PROVIDER -> NETWORK_LOCATION_ATTEMPT_TIMEOUT_MILLIS
             else -> NETWORK_LOCATION_ATTEMPT_TIMEOUT_MILLIS
         }
         val location = withTimeoutOrNull(timeoutMillis) {
@@ -1668,12 +2037,107 @@ private fun Context.findBestLastKnownLocatedLocation(maxAgeMillis: Long? = null)
         }
         .maxByOrNull(Location::getTime)
         ?.toLocatedGeoPoint()
+        ?.also { location ->
+            Log.d(
+                APP_LOG_TAG,
+                "last known location=${location.point.latitude},${location.point.longitude}, provider=${location.provider}, accuracy=${location.accuracyMeters}, ageMs=${location.ageMillis}"
+            )
+        }
 }
 
 private fun List<AirQualityStation>.nearestStationTo(point: GeoPoint): AirQualityStation? {
     return minByOrNull { station ->
         point.approximateDistanceTo(GeoPoint(station.latitude, station.longitude))
     }
+}
+
+private fun buildLoopWaypoints(
+    center: GeoPoint,
+    start: GeoPoint,
+    targetDistanceMeters: Int? = null,
+    radiusScale: Double = 1.0
+): List<GeoPoint> {
+    val latitudeScale = 111_000.0
+    val longitudeScale = latitudeScale * kotlin.math.cos(Math.toRadians(center.latitude))
+    val startNorthMeters = (start.latitude - center.latitude) * latitudeScale
+    val startEastMeters = (start.longitude - center.longitude) * longitudeScale
+    val startDistance = kotlin.math.sqrt(
+        startNorthMeters * startNorthMeters + startEastMeters * startEastMeters
+    )
+    val requestedRadius = targetDistanceMeters
+        ?.takeIf { it >= 500 }
+        ?.let { it / LOOP_ROUTE_DISTANCE_EXPANSION_FACTOR / (2.0 * Math.PI) }
+    val radiusMeters = ((requestedRadius ?: startDistance) * radiusScale).coerceIn(180.0, 850.0)
+
+    val unitNorth = if (startDistance >= 50.0) startNorthMeters / startDistance else -1.0
+    val unitEast = if (startDistance >= 50.0) startEastMeters / startDistance else 0.0
+    val sideNorth = -unitEast
+    val sideEast = unitNorth
+
+    return listOf(
+        center.offsetByMeters(sideNorth * radiusMeters, sideEast * radiusMeters),
+        center.offsetByMeters(-unitNorth * radiusMeters, -unitEast * radiusMeters),
+        center.offsetByMeters(-sideNorth * radiusMeters, -sideEast * radiusMeters)
+    )
+}
+
+private fun buildDistanceAwareLoopRoutes(
+    repository: TmapPedestrianRouteRepository,
+    startPoint: GeoPoint,
+    center: GeoPoint,
+    targetDistanceMeters: Int?
+): List<RouteCandidate> {
+    val scales = if (targetDistanceMeters == null) {
+        listOf(1.0)
+    } else {
+        listOf(0.72, 0.58, 0.46, 0.36)
+    }
+    val attempts = scales.map { scale ->
+        val loopWaypoints = buildLoopWaypoints(
+            center = center,
+            start = startPoint,
+            targetDistanceMeters = targetDistanceMeters,
+            radiusScale = scale
+        )
+        repository.getRecommendedRoutes(
+            startPlace = startPoint.toTmapPlace("출발"),
+            waypointPlaces = loopWaypoints.mapIndexed { index, point ->
+                point.toTmapPlace("AI 경유 ${index + 1}")
+            },
+            destinationPlace = startPoint.toTmapPlace("도착")
+        )
+    }.filter { it.isNotEmpty() }
+
+    if (attempts.isEmpty()) return emptyList()
+    if (targetDistanceMeters == null) return attempts.first()
+
+    return attempts.minBy { routes ->
+        kotlin.math.abs(routes.first().distanceMeters - targetDistanceMeters)
+    }
+}
+
+private fun String.extractRequestedDistanceMeters(): Int? {
+    val kmMatch = Regex("""(\d+(?:\.\d+)?)\s*(?:km|킬로|키로|킬로미터)""", RegexOption.IGNORE_CASE)
+        .find(this)
+    if (kmMatch != null) {
+        return (kmMatch.groupValues[1].toDoubleOrNull()?.times(1000))?.toInt()
+    }
+
+    val meterMatch = Regex("""(\d+(?:\.\d+)?)\s*(?:m|미터)""", RegexOption.IGNORE_CASE)
+        .find(this)
+    return meterMatch?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.toInt()
+}
+
+private fun GeoPoint.offsetByMeters(
+    northMeters: Double,
+    eastMeters: Double
+): GeoPoint {
+    val latitudeScale = 111_000.0
+    val longitudeScale = latitudeScale * kotlin.math.cos(Math.toRadians(latitude))
+    return GeoPoint(
+        latitude = latitude + northMeters / latitudeScale,
+        longitude = longitude + eastMeters / longitudeScale
+    )
 }
 
 private fun GeoPoint.approximateDistanceTo(other: GeoPoint): Double {
