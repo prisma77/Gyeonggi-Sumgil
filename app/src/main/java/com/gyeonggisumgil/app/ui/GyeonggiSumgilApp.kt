@@ -1637,9 +1637,27 @@ private fun String.ensureCompleteRouteAnswer(fallbackAnswer: String): String {
     }
     val looksIncomplete = trimmed.length < 40 ||
         !hasSentenceEnd ||
-        incompleteEndings.any { ending -> trimmed.endsWith(ending) }
+        incompleteEndings.any { ending -> trimmed.endsWith(ending) } ||
+        trimmed.looksLikePromptChecklistLeak()
 
     return if (looksIncomplete) fallbackAnswer else trimmed
+}
+
+private fun String.looksLikePromptChecklistLeak(): Boolean {
+    val lower = lowercase(Locale.ROOT)
+    val leakPatterns = listOf(
+        "detour disclaimer",
+        "only input names",
+        "no exaggeration",
+        "checklist",
+        "included? yes",
+        "yes (",
+        "* "
+    )
+    val hasEnglishChecklist = leakPatterns.any { lower.contains(it) }
+    val koreanAnswerSignal = listOf("추천", "주의", "비추천", "산책", "대기질", "날씨", "pm10", "pm2.5")
+        .any { lower.contains(it) }
+    return hasEnglishChecklist && !koreanAnswerSignal
 }
 
 private fun buildDeterministicAdviceAnswer(
