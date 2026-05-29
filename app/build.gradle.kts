@@ -12,6 +12,30 @@ val localProperties = Properties().apply {
     }
 }
 
+fun String.asBuildConfigString(): String {
+    return replace("\\", "\\\\").replace("\"", "\\\"")
+}
+
+fun Properties.unnamedPublicDataKey(): String? {
+    val knownKeys = setOf(
+        "sdk.dir",
+        "KAKAO_NATIVE_APP_KEY",
+        "NAVER_CLIENT_ID",
+        "TMAP_APP_KEY",
+        "AIRKOREA_SERVICE_KEY",
+        "GEMINI_API_KEY",
+        "KMA_SERVICE_KEY",
+        "WEATHER_SERVICE_KEY",
+        "VILAGE_FCST_SERVICE_KEY"
+    )
+    return stringPropertyNames()
+        .firstOrNull { key -> key !in knownKeys && key.length > 40 && !key.contains(".") }
+        ?.let { key ->
+            val value = getProperty(key).orEmpty()
+            if (value.isBlank()) key else "$key=$value"
+        }
+}
+
 android {
     namespace = "com.gyeonggisumgil.app"
     compileSdk = 34
@@ -39,10 +63,18 @@ android {
             (project.findProperty("GEMINI_API_KEY") as? String)
                 ?: localProperties.getProperty("GEMINI_API_KEY")
                 ?: ""
-        buildConfigField("String", "TMAP_APP_KEY", "\"$tmapAppKey\"")
-        buildConfigField("String", "NAVER_CLIENT_ID", "\"$naverClientId\"")
-        buildConfigField("String", "AIRKOREA_SERVICE_KEY", "\"$airKoreaServiceKey\"")
-        buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
+        val kmaServiceKey =
+            (project.findProperty("KMA_SERVICE_KEY") as? String)
+                ?: localProperties.getProperty("KMA_SERVICE_KEY")
+                ?: localProperties.getProperty("WEATHER_SERVICE_KEY")
+                ?: localProperties.getProperty("VILAGE_FCST_SERVICE_KEY")
+                ?: localProperties.unnamedPublicDataKey()
+                ?: ""
+        buildConfigField("String", "TMAP_APP_KEY", "\"${tmapAppKey.asBuildConfigString()}\"")
+        buildConfigField("String", "NAVER_CLIENT_ID", "\"${naverClientId.asBuildConfigString()}\"")
+        buildConfigField("String", "AIRKOREA_SERVICE_KEY", "\"${airKoreaServiceKey.asBuildConfigString()}\"")
+        buildConfigField("String", "GEMINI_API_KEY", "\"${geminiApiKey.asBuildConfigString()}\"")
+        buildConfigField("String", "KMA_SERVICE_KEY", "\"${kmaServiceKey.asBuildConfigString()}\"")
         manifestPlaceholders["NAVER_CLIENT_ID"] = naverClientId
     }
 

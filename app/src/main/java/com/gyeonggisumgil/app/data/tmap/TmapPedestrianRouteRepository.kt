@@ -137,7 +137,7 @@ class TmapPedestrianRouteRepository(
             id = id,
             distanceMeters = legs.sumOf { it.distanceMeters },
             durationMinutes = legs.sumOf { it.durationMinutes },
-            exposureSummary = "${waypointPlaces.joinToString(" -> ") { it.name }} 경유 산책 경로입니다.",
+            exposureSummary = waypointPlaces.toWaypointSummary(),
             coordinates = combinedCoordinates
         )
     }
@@ -161,4 +161,12 @@ class TmapPedestrianRouteRepository(
         )
     }
 
+}
+
+private fun List<TmapPlace>.toWaypointSummary(): String {
+    return when (size) {
+        0 -> "Tmap 보행자 경로안내 API로 계산한 도보 경로입니다."
+        1 -> "${first().name}을 지나 돌아오는 산책 경로입니다."
+        else -> "산책 지점을 따라 돌아오는 순환형 경로입니다."
+    }
 }

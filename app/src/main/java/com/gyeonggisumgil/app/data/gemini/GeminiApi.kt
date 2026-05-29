@@ -3,6 +3,8 @@ package com.gyeonggisumgil.app.data.gemini
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.gyeonggisumgil.app.data.ai.AiPromptTemplates
+import com.gyeonggisumgil.app.domain.model.GeoPoint
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -15,6 +17,51 @@ class GeminiApi(
     private val client: OkHttpClient = defaultClient()
 ) {
     fun generateWalkingAdvice(prompt: String): String {
+        return generateText(
+            prompt = prompt,
+            systemInstruction = AiPromptTemplates.SYSTEM_INSTRUCTION,
+            temperature = 0.45,
+            topP = 0.9,
+            maxOutputTokens = 1_200
+        )
+    }
+
+    fun generateRouteDecision(prompt: String): String {
+        return generateText(
+            prompt = prompt,
+            systemInstruction = AiPromptTemplates.ROUTE_DECISION_SYSTEM_INSTRUCTION,
+            temperature = 0.15,
+            topP = 0.85,
+            maxOutputTokens = 900
+        )
+    }
+
+    fun generateGroundedRouteDecision(
+        prompt: String,
+        locationBias: GeoPoint?
+    ): String {
+        return generateText(
+            prompt = prompt,
+            systemInstruction = AiPromptTemplates.ROUTE_DECISION_SYSTEM_INSTRUCTION +
+                "\n\n" +
+                MAPS_GROUNDED_ROUTE_DECISION_RULES,
+            temperature = 0.1,
+            topP = 0.8,
+            maxOutputTokens = 1_000,
+            enableGoogleMapsGrounding = true,
+            mapsGroundingLocation = locationBias
+        )
+    }
+
+    private fun generateText(
+        prompt: String,
+        systemInstruction: String,
+        temperature: Double,
+        topP: Double,
+        maxOutputTokens: Int,
+        enableGoogleMapsGrounding: Boolean = false,
+        mapsGroundingLocation: GeoPoint? = null
+    ): String {
         require(apiKey.isNotBlank()) { "GEMINI_API_KEY is blank." }
         require(prompt.isNotBlank()) { "prompt is blank." }
 
@@ -29,7 +76,7 @@ class GeminiApi(
                                 JsonObject().apply {
                                     addProperty(
                                         "text",
-                                        "너는 경기 숨길 앱의 산책 상담 AI다. 한국어로 답하고, 미세먼지 수치와 경로 정보를 근거로 안전하고 실용적인 산책 조언만 제공한다. 의료 진단처럼 단정하지 말고 민감군 주의 문구를 포함한다."
+                                        systemInstruction
                                     )
                                 }
                             )
@@ -56,11 +103,14 @@ class GeminiApi(
             add(
                 "generationConfig",
                 JsonObject().apply {
-                    addProperty("temperature", 0.45)
-                    addProperty("topP", 0.9)
-                    addProperty("maxOutputTokens", 1_200)
+                    addProperty("temperature", temperature)
+                    addProperty("topP", topP)
+                    addProperty("maxOutputTokens", maxOutputTokens)
                 }
             )
+            if (enableGoogleMapsGrounding) {
+                addGoogleMapsGrounding(mapsGroundingLocation)
+            }
         }.toString()
 
         val request = Request.Builder()
@@ -91,7 +141,22 @@ class GeminiApi(
     }
 
     companion object {
-        const val GEMINI_MODEL = "gemini-2.5-flash"
+        const val GEMINI_MODEL = "gemini-3.5-flash"
+        private const val MAPS_GROUNDED_ROUTE_DECISION_RULES = """
+            Google Maps grounding is enabled for this route classification request.
+            Use it only to identify real-world places and their most useful search names.
+            Keep the response as a single JSON object matching the requested schema.
+            For lakes, rivers, streams, parks, and waterfront paths, prefer the actual park,
+            lake, trail, or riverside name over nearby stations, parking lots, stores, or cafes.
+            Do not use a parking lot, station, shop, apartment, or random nearby POI as the
+            main place unless the user explicitly requested that exact POI.
+            If the user asks for a lap around a lake or park, set route_shape to "lake_loop"
+            or "loop" and include the exact place name in place_queries.
+            If the user asks for a riverside or stream course, set route_shape to
+            "river_out_and_back" and include the exact river/stream/park name in place_queries.
+            Include 2 to 4 place_queries when useful: exact grounded place title first,
+            then a broader local variant with city/province. Do not invent coordinates.
+        """
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
         private fun defaultClient(): OkHttpClient {
@@ -102,4 +167,36 @@ class GeminiApi(
                 .build()
         }
     }
+}
+
+private fun JsonObject.addGoogleMapsGrounding(locationBias: GeoPoint?) {
+    add(
+        "tools",
+        JsonArray().apply {
+            add(
+                JsonObject().apply {
+                    add("googleMaps", JsonObject())
+                }
+            )
+        }
+    )
+    if (locationBias == null) return
+
+    add(
+        "toolConfig",
+        JsonObject().apply {
+            add(
+                "retrievalConfig",
+                JsonObject().apply {
+                    add(
+                        "latLng",
+                        JsonObject().apply {
+                            addProperty("latitude", locationBias.latitude)
+                            addProperty("longitude", locationBias.longitude)
+                        }
+                    )
+                }
+            )
+        }
+    )
 }

@@ -82,9 +82,9 @@ class AirKoreaApi(
 
         private fun defaultClient(): OkHttpClient {
             return OkHttpClient.Builder()
-                .connectTimeout(2, TimeUnit.SECONDS)
-                .readTimeout(3, TimeUnit.SECONDS)
-                .callTimeout(4, TimeUnit.SECONDS)
+                .connectTimeout(4, TimeUnit.SECONDS)
+                .readTimeout(8, TimeUnit.SECONDS)
+                .callTimeout(10, TimeUnit.SECONDS)
                 .build()
         }
     }

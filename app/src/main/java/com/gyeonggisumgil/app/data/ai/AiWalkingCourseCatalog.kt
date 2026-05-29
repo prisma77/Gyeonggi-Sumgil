@@ -89,7 +89,7 @@ class AiWalkingCourseCatalog {
             AiWalkingCourse(
                 id = "misa-lake-loop",
                 name = "미사호수공원 한바퀴",
-                aliases = listOf("미사호수", "미사 호수", "미사호수공원", "미사한강공원", "망월천"),
+                aliases = listOf("미사호수", "미사 호수", "미사호수공원", "망월천"),
                 shape = AiCourseShape.LakeLoop,
                 center = GeoPoint(37.5639, 127.1907),
                 entryPoint = GeoPoint(37.5630, 127.1929),
@@ -103,6 +103,20 @@ class AiWalkingCourseCatalog {
                 sourceTrailId = "hanam-misa-lake"
             ),
             AiWalkingCourse(
+                id = "misa-han-river-outback",
+                name = "미사 한강변 왕복 산책",
+                aliases = listOf("미사강변대로", "미사IC", "미사 한강", "미사 한강변", "미사한강공원", "한강공원 미사", "미사강변"),
+                shape = AiCourseShape.RiverOutAndBack,
+                center = GeoPoint(37.5585, 127.2060),
+                entryPoint = GeoPoint(37.5488, 127.2135),
+                waypoints = listOf(
+                    GeoPoint(37.5527, 127.2110),
+                    GeoPoint(37.5572, 127.2070),
+                    GeoPoint(37.5618, 127.2028),
+                    GeoPoint(37.5664, 127.1987)
+                )
+            ),
+            AiWalkingCourse(
                 id = "jungnangcheon-river",
                 name = "중랑천 왕복 산책",
                 aliases = listOf("중랑천", "중랑천길", "월계", "하계천"),
@@ -113,6 +127,21 @@ class AiWalkingCourseCatalog {
                     GeoPoint(37.6251, 127.0687),
                     GeoPoint(37.6336, 127.0647),
                     GeoPoint(37.6251, 127.0687)
+                )
+            ),
+            AiWalkingCourse(
+                id = "byeollae-wangsukcheon-river",
+                name = "별내 왕숙천 왕복 산책",
+                aliases = listOf("별내 왕숙천", "별내역", "별내별가람", "별내 별가람", "남양주 왕숙천"),
+                shape = AiCourseShape.RiverOutAndBack,
+                center = GeoPoint(37.6552, 127.1211),
+                entryPoint = GeoPoint(37.6427, 127.1269),
+                waypoints = listOf(
+                    GeoPoint(37.6468, 127.1248),
+                    GeoPoint(37.6512, 127.1222),
+                    GeoPoint(37.6565, 127.1198),
+                    GeoPoint(37.6617, 127.1172),
+                    GeoPoint(37.6668, 127.1149)
                 )
             ),
             AiWalkingCourse(
