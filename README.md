@@ -119,6 +119,36 @@ Windows PowerShell에서는 다음 명령을 사용할 수 있습니다.
 .\gradlew.bat test
 ```
 
+## Docker 빌드
+
+로컬 Android Studio 환경 없이도 테스트와 Debug APK 빌드를 실행할 수 있도록 Dockerfile을 제공합니다.
+
+### 이미지 빌드
+
+```bash
+docker build -t gyeonggi-sumgil .
+```
+
+### 테스트 및 APK 빌드
+
+```bash
+docker run --rm gyeonggi-sumgil
+```
+
+API 키가 필요한 빌드를 컨테이너에서 실행하려면 로컬의 `local.properties`를 컨테이너에 마운트합니다.
+
+```bash
+docker run --rm -v "$PWD/local.properties:/workspace/local.properties:ro" gyeonggi-sumgil
+```
+
+Windows PowerShell에서는 다음처럼 실행할 수 있습니다.
+
+```powershell
+docker run --rm -v "${PWD}\local.properties:/workspace/local.properties:ro" gyeonggi-sumgil
+```
+
+`local.properties`는 `.dockerignore`에 포함되어 Docker 이미지 안으로 복사되지 않습니다.
+
 ## 현재 구현 상태
 
 - Android 실제 기기에서 지도, 대기질, 날씨, AI 상담 기능 테스트
